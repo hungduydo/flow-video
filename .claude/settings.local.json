@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(brew install:*)"
+      "Bash(brew install:*)",
+      "Bash(python -m py_compile flow_v2/classifier.py flow_v2/main_v2.py flow_v2/workflows/narration.py flow_v2/workflows/hybrid.py flow_v2/workflows/music_visual.py flow_v2/workflows/silent_ambient.py flow_v2/workflows/reaction.py)",
+      "Bash(grep -l \"from pipeline\\\\|import pipeline\" /Users/user/develop/flow-video/pipeline/step*.py)"
     ]
   }
 }

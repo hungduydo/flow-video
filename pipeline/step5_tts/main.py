@@ -1,7 +1,7 @@
 """
 Step 5: Vietnamese captions_vn.srt → per-segment TTS audio → audio_vn_full.mp3
 
-Uses edge-tts (Microsoft Edge TTS, free, no API key) with vi-VN-HoaiMyNeural.
+Uses a pluggable TTSProvider (edge_tts by default, or elevenlabs via --tts-provider).
 All segments are generated at natural speed, then a single global speed adjustment
 (atempo, clamped 0.9–1.2x) is applied to the merged audio to match the original
 audio duration. This avoids per-segment mechanical stretching.
@@ -20,17 +20,17 @@ Output:
   output/{video_id}/.step5.done            (sentinel)
 """
 
-import asyncio
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-import edge_tts
 import srt
 from tqdm import tqdm
 
-VOICE = "vi-VN-HoaiMyNeural"
+from .tts_providers import TTSProvider, get_provider
+
 MIN_DURATION = 0.3   # seconds — skip TTS for extremely short segments
 SPEED_MIN = 0.9      # atempo lower bound
 SPEED_MAX = 1.2      # atempo upper bound
@@ -52,41 +52,20 @@ def _get_audio_duration(path: Path) -> float:
     return float(result.stdout.strip())
 
 
-async def _tts_segment(text: str, output_path: Path) -> None:
-    """Generate TTS audio for a single text segment at natural speed."""
-    communicate = edge_tts.Communicate(text, VOICE)
-    await communicate.save(str(output_path))
+def _is_speakable(text: str) -> bool:
+    """Return True if text contains at least one letter or digit.
+
+    Punctuation-only strings (e.g. '...', '???', '!!!') cause edge-tts to
+    return NoAudioReceived, so we skip them and insert silence instead.
+    """
+    return bool(re.search(r"[A-Za-z\d\u00C0-\u024F\u1E00-\u1EFF]", text))
 
 
-_AUDIO_FILTER = (
-    "highpass=f=80,"
-    "lowpass=f=12000,"
-    "equalizer=f=100:width_type=o:width=2:g=3,"
-    "equalizer=f=3000:width_type=o:width=2:g=2,"
-    "acompressor=threshold=-18dB:ratio=4:attack=5:release=50,"
-    "loudnorm=I=-16:TP=-1.5:LRA=11"
-)
-
-
-def _enhance_audio(input_path: Path, output_path: Path) -> None:
-    """Apply EQ, compression, echo, and loudness normalization to a TTS segment."""
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(input_path),
-        "-af", _AUDIO_FILTER,
-        "-c:a", "libmp3lame", "-q:a", "4",
-        str(output_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"audio enhance failed for {input_path}:\n{result.stderr}")
-
-
-def _generate_silence(output: Path, duration: float) -> None:
+def _generate_silence(output: Path, duration: float, sample_rate: int = 24000, channels: str = "mono") -> None:
     """Generate a silent MP3 of the given duration."""
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+        "-f", "lavfi", "-i", f"anullsrc=r={sample_rate}:cl={channels}",
         "-t", str(duration),
         "-c:a", "libmp3lame", "-q:a", "4",
         str(output),
@@ -151,7 +130,7 @@ def _mix_with_accompaniment(speech_path: Path, accompaniment_path: Path, output_
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-def generate_tts(output_dir: Path) -> Path:
+def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
     sentinel = output_dir / ".step5.done"
     if sentinel.exists():
         print("[step5] Skip — audio_vn_full.mp3 already generated")
@@ -161,11 +140,18 @@ def generate_tts(output_dir: Path) -> Path:
     if not vn_srt_path.exists():
         raise FileNotFoundError(f"captions_vn.srt not found in {output_dir}")
 
+    tts_provider: TTSProvider = get_provider(provider)
+    fmt = tts_provider.audio_format
+
     audio_vn_dir = output_dir / "audio_vn"
     audio_vn_dir.mkdir(exist_ok=True)
 
     subtitles = list(srt.parse(vn_srt_path.read_text(encoding="utf-8")))
-    print(f"[step5] Generating TTS for {len(subtitles)} segments (voice: {VOICE}) …")
+    print(f"[step5] Generating TTS for {len(subtitles)} segments (provider: {provider}) …")
+
+    if provider == "elevenlabs":
+        total_chars = sum(len(sub.content.strip()) for sub in subtitles)
+        print(f"[step5] ElevenLabs: ~{total_chars:,} characters to synthesize")
 
     all_paths: list[Path] = []
     prev_end = 0.0
@@ -179,21 +165,25 @@ def generate_tts(output_dir: Path) -> Path:
         gap = sub_start - prev_end
         if gap > 0.05:
             gap_path = audio_vn_dir / f"gap_{i:04d}.mp3"
-            _generate_silence(gap_path, gap)
+            _generate_silence(gap_path, gap, fmt["sample_rate"], fmt["channels"])
             all_paths.append(gap_path)
 
         original_duration = (sub.end - sub.start).total_seconds()
         text = sub.content.strip()
 
-        if not text or original_duration < MIN_DURATION:
+        if not text or original_duration < MIN_DURATION or not _is_speakable(text):
             sil_path = audio_vn_dir / f"seg_{idx}_sil.mp3"
-            _generate_silence(sil_path, max(original_duration, 0.1))
+            _generate_silence(sil_path, max(original_duration, 0.1), fmt["sample_rate"], fmt["channels"])
             all_paths.append(sil_path)
             prev_end = sub_end
             continue
 
         seg_path = audio_vn_dir / f"seg_{idx}.mp3"
-        asyncio.run(_tts_segment(text, seg_path))
+        try:
+            tts_provider.synth(text, seg_path)
+        except Exception as exc:
+            tqdm.write(f"[step5] WARNING: TTS failed for seg {idx} ({text!r:.50}): {exc}; using silence")
+            _generate_silence(seg_path, original_duration, fmt["sample_rate"], fmt["channels"])
         all_paths.append(seg_path)
         prev_end = sub_end
 
@@ -214,19 +204,14 @@ def generate_tts(output_dir: Path) -> Path:
         print("[step5] WARNING: could not determine original duration, skipping speed adjust")
         speech_path.rename(speed_adjusted_path)
 
-    # Apply EQ, compression, echo, and loudness normalization to the merged audio
-    enhanced_path = output_dir / "audio_vn_speech_enhanced.mp3"
-    print("[step5] Enhancing audio …")
-    _enhance_audio(speed_adjusted_path, enhanced_path)
-
     # Mix with accompaniment (background music) if available
     full_audio_path = output_dir / "audio_vn_full.mp3"
     accompaniment_path = output_dir / "accompaniment.mp3"
     if accompaniment_path.exists():
         print("[step5] Mixing speech with accompaniment …")
-        _mix_with_accompaniment(enhanced_path, accompaniment_path, full_audio_path)
+        _mix_with_accompaniment(speed_adjusted_path, accompaniment_path, full_audio_path)
     else:
-        enhanced_path.rename(full_audio_path)
+        speed_adjusted_path.rename(full_audio_path)
 
     sentinel.touch()
     print(f"[step5] Done — {full_audio_path}")
@@ -235,6 +220,7 @@ def generate_tts(output_dir: Path) -> Path:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python -m pipeline.step5_tts <output_dir>")
+        print("Usage: python -m pipeline.step5_tts <output_dir> [provider]")
         sys.exit(1)
-    generate_tts(Path(sys.argv[1]))
+    _provider = sys.argv[2] if len(sys.argv) > 2 else "edge_tts"
+    generate_tts(Path(sys.argv[1]), provider=_provider)

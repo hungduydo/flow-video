@@ -4,7 +4,15 @@ demucs
 deepgram-sdk
 google-generativeai
 edge-tts
+elevenlabs
+requests
 ffmpeg-python
 python-dotenv
 tqdm
 srt
+
+# Optional: YouTube upload (--upload flag in step7)
+# pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+# google-api-python-client>=2.0.0
+# google-auth-httplib2>=0.1.0
+# google-auth-oauthlib>=0.5.0

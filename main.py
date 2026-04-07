@@ -29,9 +29,33 @@ Options:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+
+# ── Interactive chooser ───────────────────────────────────────────────────────
+
+def _choose(prompt: str, options: list[str], default: str) -> str:
+    """Show a numbered menu and return the chosen option."""
+    print(f"\n{prompt}")
+    for i, opt in enumerate(options, 1):
+        marker = " (default)" if opt == default else ""
+        print(f"  {i}) {opt}{marker}")
+    while True:
+        raw = input(f"  Choice [1-{len(options)}, Enter={default}]: ").strip()
+        if raw == "":
+            return default
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1]
+        print(f"  Please enter a number between 1 and {len(options)}.")
+
+# Must be set before grpcio is imported (google-generativeai pulls it in at step 4).
+# Without this, gRPC's at-fork handler fires a FATAL check when subprocess.run()
+# calls fork() in step 5, crashing the child process before ffmpeg can exec.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
+os.environ.setdefault("GRPC_POLL_STRATEGY", "poll")
 
 from dotenv import load_dotenv
 
@@ -86,15 +110,59 @@ def main() -> None:
                         help="Output video CRF quality (default: 23)")
     parser.add_argument("--cookies", metavar="FILE", default=None,
                         help="Netscape cookie file for Bilibili login")
-    parser.add_argument("--model", default="large-v3",
+    parser.add_argument("--model", default=None,
                         choices=["large-v3", "large-v2", "medium", "small", "base"],
-                        help="Whisper model size (default: large-v3)")
-    parser.add_argument("--transcriber", default="whisper",
+                        help="Whisper model size (default: large-v3; prompted if omitted)")
+    parser.add_argument("--transcriber", default=None,
                         choices=["whisper", "deepgram"],
-                        help="Transcription provider (default: whisper)")
+                        help="Transcription provider (prompted if omitted)")
+    parser.add_argument("--tts-provider", default=None,
+                        choices=["edge_tts", "elevenlabs"],
+                        help="TTS provider for step 5 (prompted if omitted)")
+    parser.add_argument("--translation-strategy", default=None,
+                        choices=["standard", "syllable_equivalence"],
+                        help="Translation strategy for step 4 (prompted if omitted)")
+    parser.add_argument("--platform", default=None,
+                        choices=["youtube", "tiktok", "both"],
+                        help="Output platform profile: youtube (16:9), tiktok (9:16 crop), "
+                             "both (prompted if omitted)")
+    parser.add_argument("--tiktok-crop-x", type=int, default=None, metavar="X",
+                        dest="tiktok_crop_x",
+                        help="Horizontal pixel offset for TikTok 9:16 crop (default: center). "
+                             "Use when the subject is off-center in the frame.")
     parser.add_argument("--output", default="output", metavar="DIR",
                         help="Base output directory (default: ./output)")
     args = parser.parse_args()
+
+    # ── Interactive prompts for unspecified options ───────────────────────────
+    if sys.stdin.isatty():
+        if args.transcriber is None:
+            args.transcriber = _choose(
+                "Transcription provider:", ["whisper", "deepgram"], "whisper"
+            )
+        if args.transcriber == "whisper" and args.model is None:
+            args.model = _choose(
+                "Whisper model size:", ["large-v3", "large-v2", "medium", "small", "base"], "large-v3"
+            )
+        if args.tts_provider is None:
+            args.tts_provider = _choose(
+                "TTS provider:", ["edge_tts", "elevenlabs"], "edge_tts"
+            )
+        if args.translation_strategy is None:
+            args.translation_strategy = _choose(
+                "Translation strategy:", ["standard", "syllable_equivalence"], "standard"
+            )
+        if args.platform is None:
+            args.platform = _choose(
+                "Output platform:", ["youtube", "tiktok", "both"], "youtube"
+            )
+    else:
+        # Non-interactive: fall back to defaults
+        args.transcriber = args.transcriber or "whisper"
+        args.model = args.model or "large-v3"
+        args.tts_provider = args.tts_provider or "edge_tts"
+        args.translation_strategy = args.translation_strategy or "standard"
+        args.platform = args.platform or "youtube"
 
     _check_ffmpeg()
 
@@ -104,18 +172,18 @@ def main() -> None:
     # ── Step 1: Download ──────────────────────────────────────────────────────
     # We need the video_id before we can clear sentinels, so always run step 1
     # probe to get the ID, then apply --force / --from-step logic.
-    from pipeline.step1_download import download
-    from pipeline.step2_extract_audio import extract_audio
-    from pipeline.step2b_separate_audio import separate_audio
-    from pipeline.step3_transcribe import transcribe
-    from pipeline.step4_translate import translate
-    from pipeline.step5_tts import generate_tts
-    from pipeline.step6_compose import compose
+    from pipeline.step1_download.main import download
+    from pipeline.step2_extract_audio.main import extract_audio
+    from pipeline.step2b_separate_audio.main import separate_audio
+    from pipeline.step3_transcribe.main import transcribe
+    from pipeline.step4_translate.main import translate
+    from pipeline.step5_tts.main import generate_tts
+    from pipeline.step6_compose.main import compose
 
     print("=" * 60)
     print("flow-video pipeline")
     print(f"  URL:          {args.url}")
-    print(f"  Transcriber:  {args.transcriber}  Model: {args.model}  CRF: {args.crf}")
+    print(f"  Transcriber:  {args.transcriber}  Model: {args.model}  CRF: {args.crf}  TTS: {args.tts_provider}  Strategy: {args.translation_strategy}  Platform: {args.platform}")
     print("=" * 60)
 
     # Step 1 always runs the probe to get video_id (fast, no download if done)
@@ -126,11 +194,16 @@ def main() -> None:
         print("[main] --force: clearing all sentinels")
         _clear_sentinels_from(output_dir, from_step=1)
         (output_dir / ".step2b.done").unlink(missing_ok=True)
+        (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
+        (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
     elif args.from_step is not None:
         print(f"[main] --from-step {args.from_step}: clearing sentinels from step {args.from_step}")
         _clear_sentinels_from(output_dir, from_step=args.from_step)
         if args.from_step <= 3:  # step2b sits between steps 2 and 3
             (output_dir / ".step2b.done").unlink(missing_ok=True)
+        if args.from_step <= 6:
+            (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
+            (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
 
     # ── Step 2: Extract audio ─────────────────────────────────────────────────
     extract_audio(output_dir)
@@ -142,13 +215,18 @@ def main() -> None:
     transcribe(output_dir, model_size=args.model, provider=args.transcriber)
 
     # ── Step 4: Translate ─────────────────────────────────────────────────────
-    translate(output_dir)
+    translate(output_dir, strategy=args.translation_strategy)
 
     # ── Step 5: TTS ───────────────────────────────────────────────────────────
-    generate_tts(output_dir)
+    generate_tts(output_dir, provider=args.tts_provider)
 
     # ── Step 6: Compose ───────────────────────────────────────────────────────
-    final_path = compose(output_dir, crf=args.crf)
+    final_path = compose(
+        output_dir,
+        crf=args.crf,
+        platform=args.platform,
+        tiktok_crop_x=args.tiktok_crop_x,
+    )
 
     # ── Done ──────────────────────────────────────────────────────────────────
     metadata_path = output_dir / "metadata.json"
