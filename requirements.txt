@@ -1,0 +1,10 @@
+yt-dlp
+faster-whisper
+demucs
+deepgram-sdk
+google-generativeai
+edge-tts
+ffmpeg-python
+python-dotenv
+tqdm
+srt
