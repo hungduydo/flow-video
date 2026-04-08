@@ -10,7 +10,7 @@ Pipeline:
   step2   Extract audio (ffmpeg → 16 kHz mono WAV)
   step2b  Separate vocals / accompaniment (Spleeter 2stems)
   step3   Transcribe Chinese speech (faster-whisper or Deepgram → captions_cn.srt)
-  step4   Translate to Vietnamese (Gemini 1.5 Flash → captions_vn.srt)
+  step4   Translate to Vietnamese (Gemini 2.0 Flash → captions_vn.srt)
   step5   Generate Vietnamese TTS + sync to timestamps (edge-tts + atempo + amix)
   step6   Compose final video (ffmpeg: watermark crop + dub + captions)
 
@@ -119,9 +119,9 @@ def main() -> None:
     parser.add_argument("--tts-provider", default=None,
                         choices=["edge_tts", "elevenlabs"],
                         help="TTS provider for step 5 (prompted if omitted)")
-    parser.add_argument("--translation-strategy", default=None,
-                        choices=["standard", "syllable_equivalence"],
-                        help="Translation strategy for step 4 (prompted if omitted)")
+    parser.add_argument("--translator", default=None,
+                        choices=["gemini", "claude"],
+                        help="Translation provider for step 4 (prompted if omitted)")
     parser.add_argument("--platform", default=None,
                         choices=["youtube", "tiktok", "both"],
                         help="Output platform profile: youtube (16:9), tiktok (9:16 crop), "
@@ -148,9 +148,9 @@ def main() -> None:
             args.tts_provider = _choose(
                 "TTS provider:", ["edge_tts", "elevenlabs"], "edge_tts"
             )
-        if args.translation_strategy is None:
-            args.translation_strategy = _choose(
-                "Translation strategy:", ["standard", "syllable_equivalence"], "standard"
+        if args.translator is None:
+            args.translator = _choose(
+                "Translation provider:", ["gemini", "claude"], "gemini"
             )
         if args.platform is None:
             args.platform = _choose(
@@ -161,7 +161,7 @@ def main() -> None:
         args.transcriber = args.transcriber or "whisper"
         args.model = args.model or "large-v3"
         args.tts_provider = args.tts_provider or "edge_tts"
-        args.translation_strategy = args.translation_strategy or "standard"
+        args.translator = args.translator or "gemini"
         args.platform = args.platform or "youtube"
 
     _check_ffmpeg()
@@ -183,7 +183,7 @@ def main() -> None:
     print("=" * 60)
     print("flow-video pipeline")
     print(f"  URL:          {args.url}")
-    print(f"  Transcriber:  {args.transcriber}  Model: {args.model}  CRF: {args.crf}  TTS: {args.tts_provider}  Strategy: {args.translation_strategy}  Platform: {args.platform}")
+    print(f"  Transcriber:  {args.transcriber}  Model: {args.model}  Translator: {args.translator}  CRF: {args.crf}  TTS: {args.tts_provider}  Platform: {args.platform}")
     print("=" * 60)
 
     # Step 1 always runs the probe to get video_id (fast, no download if done)
@@ -215,7 +215,7 @@ def main() -> None:
     transcribe(output_dir, model_size=args.model, provider=args.transcriber)
 
     # ── Step 4: Translate ─────────────────────────────────────────────────────
-    translate(output_dir, strategy=args.translation_strategy)
+    translate(output_dir, provider=args.translator)
 
     # ── Step 5: TTS ───────────────────────────────────────────────────────────
     generate_tts(output_dir, provider=args.tts_provider)

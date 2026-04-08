@@ -21,6 +21,7 @@ Output:
 """
 
 import os
+import re
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -31,9 +32,26 @@ from tqdm import tqdm
 
 load_dotenv()
 
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]')
+
 
 def _seconds_to_timedelta(seconds: float) -> timedelta:
     return timedelta(seconds=seconds)
+
+
+def _clean_subtitles(subtitles: list[srt.Subtitle]) -> list[srt.Subtitle]:
+    """Remove noise segments produced by Whisper/Deepgram and re-index.
+
+    Dropped patterns:
+    - Pure punctuation (0 CJK chars): 。！？ etc.
+    - Single-character fragments (1 CJK char): 研, 究, 子 …
+      These appear when the model stutters mid-word and emits one character
+      per segment. Keeping them causes mis-aligned Vietnamese translations.
+    """
+    cleaned = [s for s in subtitles if len(_CJK_RE.findall(s.content)) >= 2]
+    for i, sub in enumerate(cleaned, 1):
+        sub.index = i
+    return cleaned
 
 
 # ── Whisper provider ──────────────────────────────────────────────────────────
@@ -83,6 +101,11 @@ def _transcribe_whisper(output_dir: Path, srt_path: Path, sentinel: Path, model_
 
     if skipped_music:
         print(f"        Skipped {skipped_music} non-speech segment(s) (music/noise)")
+
+    raw_count = len(subtitles)
+    subtitles = _clean_subtitles(subtitles)
+    if len(subtitles) < raw_count:
+        print(f"        Cleaned {raw_count - len(subtitles)} noise fragment(s) (single-char / punct-only)")
 
     srt_path.write_text(srt.compose(subtitles), encoding="utf-8")
     sentinel.touch()
@@ -138,6 +161,11 @@ def _transcribe_deepgram(output_dir: Path, srt_path: Path, sentinel: Path) -> Pa
 
     if skipped:
         print(f"        Skipped {skipped} low-confidence utterance(s)")
+
+    raw_count = len(subtitles)
+    subtitles = _clean_subtitles(subtitles)
+    if len(subtitles) < raw_count:
+        print(f"        Cleaned {raw_count - len(subtitles)} noise fragment(s) (single-char / punct-only)")
 
     srt_path.write_text(srt.compose(subtitles), encoding="utf-8")
     sentinel.touch()

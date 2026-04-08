@@ -21,7 +21,7 @@ def get_provider(name: str) -> TTSProvider:
         return EdgeTTSProvider()
     elif name == "elevenlabs":
         return ElevenLabsProvider(
-            api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
+            api_key=os.getenv("ELEVENLABS_API_KEY", "sk_f1d1f2879e004adb762ad2b57aba0b4859ca9fafab0540d7"),
             voice_id=os.environ.get("ELEVENLABS_VOICE_ID", ELEVENLABS_VOICE_ID_DEFAULT),
         )
     else:

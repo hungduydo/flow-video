@@ -1,4 +1,27 @@
 
+## Project Structure
+
+The pipeline is organized with each step in its own folder for clean separation and easy expansion:
+
+```
+pipeline/
+├── step1_download/          # Download Bilibili videos
+├── step2_extract_audio/     # Audio extraction & normalization
+├── step2b_separate_audio/   # Vocal/accompaniment separation
+├── step3_transcribe/        # Speech-to-text (Whisper/Deepgram)
+├── step4_translate/         # Caption translation (Gemini)
+├── step5_tts/               # Text-to-speech generation
+│   └── tts_providers/       # Pluggable TTS implementations
+└── step6_compose/           # Final video composition
+```
+
+**Guidelines:**
+- Each step is self-contained in its own folder
+- Add helpers, configs, or utilities to the step's folder (don't scatter files)
+- TTS providers stay in `pipeline/step5_tts/tts_providers/`
+- Main entry points export from `main.py` in each step folder
+- `main.py` files are imported by `pipeline.stepN` package (see `__init__.py`)
+
 ## Skill routing
 
 When the user's request matches an available skill, ALWAYS invoke it using the Skill

@@ -3,6 +3,7 @@ faster-whisper
 demucs
 deepgram-sdk
 google-generativeai
+anthropic
 edge-tts
 elevenlabs
 requests

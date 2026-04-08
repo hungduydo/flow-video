@@ -136,17 +136,41 @@ output/
 
 ## Architecture
 
-The pipeline is organized into modular steps:
+The pipeline is organized into modular, self-contained steps:
 
-- `pipeline/step1_download.py` — Download video metadata and media
-- `pipeline/step2_extract_audio.py` — Audio extraction and normalization
-- `pipeline/step2b_separate_audio.py` — Vocal/accompaniment separation
-- `pipeline/step3_transcribe.py` — Speech-to-text transcription
-- `pipeline/step4_translate.py` — Caption translation
-- `pipeline/step5_tts.py` — Text-to-speech generation
-- `pipeline/step6_compose.py` — Final video composition
+```
+pipeline/
+├── step1_download/
+│   ├── main.py           # Download video metadata and media
+│   └── __init__.py
+├── step2_extract_audio/
+│   ├── main.py           # Audio extraction and normalization
+│   └── __init__.py
+├── step2b_separate_audio/
+│   ├── main.py           # Vocal/accompaniment separation
+│   └── __init__.py
+├── step3_transcribe/
+│   ├── main.py           # Speech-to-text transcription
+│   └── __init__.py
+├── step4_translate/
+│   ├── main.py           # Caption translation
+│   └── __init__.py
+├── step5_tts/
+│   ├── main.py           # Text-to-speech generation
+│   ├── tts_providers/    # TTS provider implementations
+│   │   ├── base.py
+│   │   ├── edge_tts_provider.py
+│   │   └── elevenlabs_provider.py
+│   └── __init__.py
+└── step6_compose/
+    ├── main.py           # Final video composition
+    └── __init__.py
+```
 
-Each step uses sentinel files to track completion and enable resumable processing.
+Each step:
+- Is isolated in its own folder with related utilities
+- Uses sentinel files (`.stepN.done`) to track completion and enable resumable processing
+- Can be extended with additional helpers or configs without affecting other steps
 
 ## Troubleshooting
 
