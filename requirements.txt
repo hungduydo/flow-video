@@ -11,6 +11,8 @@ ffmpeg-python
 python-dotenv
 tqdm
 srt
+opencv-python
+ollama
 
 # Optional: YouTube upload (--upload flag in step7)
 # pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib

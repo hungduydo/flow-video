@@ -34,6 +34,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Ensure project root is on sys.path when running as a script
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -73,8 +76,9 @@ def _clear_sentinels_from(output_dir: Path, from_step: int) -> None:
     if from_step <= 3:
         (output_dir / ".step2b.done").unlink(missing_ok=True)
     # workflow-specific compose sentinels
-    for extra in (".step6m.done", ".step6r.done"):
-        if from_step <= 6:
+    if from_step <= 6:
+        for extra in (".step6m.done", ".step6r.done",
+                      ".step6.youtube.done", ".step6.tiktok.done"):
             (output_dir / extra).unlink(missing_ok=True)
 
 
@@ -113,6 +117,15 @@ def main() -> None:
     parser.add_argument("--tts-provider", default="edge_tts",
                         choices=["edge_tts", "elevenlabs"],
                         help="TTS provider for step 5 (default: edge_tts)")
+    parser.add_argument("--translator", default="gemini",
+                        choices=["gemini", "claude"],
+                        help="Translation provider for step 4 (default: gemini)")
+    parser.add_argument("--platform", default="youtube",
+                        choices=["youtube", "tiktok", "both"],
+                        help="Output platform profile (default: youtube)")
+    parser.add_argument("--tiktok-crop-x", type=int, default=None, metavar="X",
+                        dest="tiktok_crop_x",
+                        help="Horizontal pixel offset for TikTok 9:16 crop (default: center)")
     parser.add_argument("--output", default="output", metavar="DIR",
                         help="Base output directory (default: ./output)")
     args = parser.parse_args()
@@ -130,7 +143,7 @@ def main() -> None:
     print("flow-video v2")
     print(f"  URL:  {args.url}")
     print(f"  Type: {args.video_type or 'auto-detect'}")
-    print(f"  Transcriber: {args.transcriber}  Model: {args.model}  CRF: {args.crf}  TTS: {args.tts_provider}")
+    print(f"  Transcriber: {args.transcriber}  Model: {args.model}  Translator: {args.translator}  CRF: {args.crf}  TTS: {args.tts_provider}  Platform: {args.platform}")
     print("=" * 60)
 
     # Step 1: always probe to get video_id (fast if already downloaded)

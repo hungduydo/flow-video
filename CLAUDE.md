@@ -8,8 +8,9 @@ pipeline/
 ├── step1_download/          # Download Bilibili videos
 ├── step2_extract_audio/     # Audio extraction & normalization
 ├── step2b_separate_audio/   # Vocal/accompaniment separation
-├── step3_transcribe/        # Speech-to-text (Whisper/Deepgram)
-├── step4_translate/         # Caption translation (Gemini)
+├── step3_transcribe/        # Speech-to-text (Whisper/Deepgram) + noise cleanup
+├── step4_translate/         # Caption translation (Gemini or Claude)
+│   └── providers/           # Pluggable translation implementations (gemini.py, claude.py)
 ├── step5_tts/               # Text-to-speech generation
 │   └── tts_providers/       # Pluggable TTS implementations
 └── step6_compose/           # Final video composition
@@ -18,9 +19,26 @@ pipeline/
 **Guidelines:**
 - Each step is self-contained in its own folder
 - Add helpers, configs, or utilities to the step's folder (don't scatter files)
+- Translation providers stay in `pipeline/step4_translate/providers/`
 - TTS providers stay in `pipeline/step5_tts/tts_providers/`
 - Main entry points export from `main.py` in each step folder
+- Every step has a `__main__.py` so it can be run with `python -m pipeline.stepN`
 - `main.py` files are imported by `pipeline.stepN` package (see `__init__.py`)
+
+## Step 4 — Translation architecture
+
+`step4_translate/` is split into focused files:
+- `main.py` — `translate(output_dir, provider)` entry point only
+- `prompt.py` — shared `SYSTEM_PROMPT`
+- `utils.py` — `batch()`, `parse_json_response()`, `build_prompt()`, `clean_subtitles()`
+- `providers/gemini.py` — Gemini 2.0 Flash provider (`run(subtitles, system_prompt)`)
+- `providers/claude.py` — Claude Sonnet 4.6 provider (`run(subtitles, system_prompt)`)
+
+Both providers use the same interface: batched translation with 3-segment context overlap and JSON array output. Adding a new provider = create `providers/yourprovider.py` with a `run()` function.
+
+## Step 3 — Noise cleanup
+
+After transcription, `_clean_subtitles()` drops segments with fewer than 2 CJK characters (single-char Whisper fragments like `研`, `究`, `了`, and punct-only segments like `。`). This runs in both Whisper and Deepgram paths before writing `captions_cn.srt`.
 
 ## Skill routing
 

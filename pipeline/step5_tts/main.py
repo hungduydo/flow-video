@@ -77,8 +77,13 @@ def _generate_silence(output: Path, duration: float, sample_rate: int = 24000, c
 
 def _concat_segments(segment_paths: list[Path], output_path: Path) -> None:
     """Concatenate segments into one MP3 using ffmpeg concat demuxer."""
+    if not segment_paths:
+        raise RuntimeError("No segments to concatenate (all_paths is empty)")
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         for p in segment_paths:
+            if not p.exists():
+                raise RuntimeError(f"Segment file does not exist: {p}")
             safe = str(p.resolve()).replace("'", "'\\''")
             f.write(f"file '{safe}'\n")
         concat_list = Path(f.name)
@@ -91,9 +96,17 @@ def _concat_segments(segment_paths: list[Path], output_path: Path) -> None:
         str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
+
+    # Show concat file content for debugging
+    concat_content = concat_list.read_text() if concat_list.exists() else ""
     concat_list.unlink(missing_ok=True)
+
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg concat failed:\n{result.stderr}")
+        raise RuntimeError(
+            f"ffmpeg concat failed (processed {len(segment_paths)} segments):\n"
+            f"Concat file content:\n{concat_content}\n"
+            f"Error:\n{result.stderr}"
+        )
 
 
 def _apply_global_speed(input_path: Path, output_path: Path, vn_duration: float, original_duration: float) -> None:
@@ -186,6 +199,24 @@ def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
             _generate_silence(seg_path, original_duration, fmt["sample_rate"], fmt["channels"])
         all_paths.append(seg_path)
         prev_end = sub_end
+
+    # If no speakable segments (e.g. music-only video), skip TTS entirely
+    if not all_paths:
+        print("[step5] No speakable segments found — skipping TTS (music-only video)")
+        full_audio_path = output_dir / "audio_vn_full.mp3"
+        accompaniment_path = output_dir / "accompaniment.mp3"
+        if accompaniment_path.exists():
+            import shutil
+            shutil.copy2(accompaniment_path, full_audio_path)
+        elif (output_dir / "audio.wav").exists():
+            cmd = [
+                "ffmpeg", "-y", "-i", str(output_dir / "audio.wav"),
+                "-c:a", "libmp3lame", "-q:a", "4", str(full_audio_path),
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+        sentinel.touch()
+        print(f"[step5] Done — {full_audio_path}")
+        return full_audio_path
 
     # Concatenate all segments + gaps into one file
     speech_path = output_dir / "audio_vn_speech.mp3"

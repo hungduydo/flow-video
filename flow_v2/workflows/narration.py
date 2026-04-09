@@ -25,6 +25,6 @@ from pipeline.step6_compose import compose
 def run(output_dir: Path, args: argparse.Namespace) -> Path:
     separate_audio(output_dir)
     transcribe(output_dir, model_size=args.model, provider=args.transcriber)
-    translate(output_dir)
+    translate(output_dir, provider=args.translator)
     generate_tts(output_dir, provider=args.tts_provider)
-    return compose(output_dir, crf=args.crf)
+    return compose(output_dir, crf=args.crf, platform=args.platform, tiktok_crop_x=args.tiktok_crop_x)

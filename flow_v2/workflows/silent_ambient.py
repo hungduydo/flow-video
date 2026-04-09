@@ -26,5 +26,5 @@ from .music_visual import compose_with_original_audio
 def run(output_dir: Path, args: argparse.Namespace) -> Path:
     # step2b intentionally skipped — ambient sounds must not be separated
     transcribe(output_dir, model_size=args.model, provider=args.transcriber)
-    translate(output_dir)
+    translate(output_dir, provider=args.translator)
     return compose_with_original_audio(output_dir, crf=args.crf)

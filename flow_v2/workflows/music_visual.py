@@ -28,7 +28,7 @@ _FFMPEG_BIN  = str(_FFMPEG_FULL) if _FFMPEG_FULL.exists() else "ffmpeg"
 def run(output_dir: Path, args: argparse.Namespace) -> Path:
     # step2b intentionally skipped — we keep the original mixed audio
     transcribe(output_dir, model_size=args.model, provider=args.transcriber)
-    translate(output_dir)
+    translate(output_dir, provider=args.translator)
     return compose_with_original_audio(output_dir, crf=args.crf)
 
 
