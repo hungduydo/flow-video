@@ -52,6 +52,40 @@ _SUBTITLE_FORCE_STYLE = {
 }
 
 
+def _auto_force_styles(
+    bbox: tuple[int, int, int, int],
+    src_w: int,
+    src_h: int,
+) -> tuple[str, str]:
+    """Compute ASS force_style strings that place subtitles just above the bbox.
+
+    Returns (youtube_style, tiktok_style).
+
+    Subtitle is always horizontally centered (Alignment=2) with its bottom edge
+    placed at bbox.y - 10 px, so it sits just above the detected box regardless
+    of whether the box is at the top or bottom of the frame.
+    """
+    _, by, _, _ = bbox
+
+    # ── YouTube (coords = source frame pixels) ────────────────────────────────
+    # Alignment=2 (bottom-center): MarginV = distance from the bottom of the frame
+    # to the subtitle bottom edge.  We want subtitle bottom at (by - 10) from top,
+    # so MarginV from bottom = src_h - (by - 10) = src_h - by + 10.
+    yt_margin = max(10, src_h - by + 10)
+    yt_style = f"Alignment=2,MarginV={yt_margin}"
+
+    # ── TikTok blur-bg (coords = TikTok canvas 1080×1920) ────────────────────
+    # Map bbox.y from source frame to TikTok canvas.
+    scale = _TIKTOK_W / src_w
+    fg_h  = int(src_h * scale) & ~1       # round down to even (matches ffmpeg scale=-2)
+    y_off = (_TIKTOK_H - fg_h) // 2       # top-of-foreground on canvas
+    canvas_by = int(by * scale) + y_off
+    tt_margin = max(10, _TIKTOK_H - canvas_by + 10)
+    tt_style = f"Alignment=2,MarginV={tt_margin}"
+
+    return yt_style, tt_style
+
+
 # ── Video helpers ─────────────────────────────────────────────────────────────
 
 def _get_video_dimensions(video_path: Path) -> tuple[int, int]:
@@ -85,7 +119,80 @@ def _get_tiktok_crop(width: int, height: int, crop_x: int | None = None) -> str:
     return f"crop={target_w}:{height}:{x_offset}:0"
 
 
+# TikTok canvas dimensions (9:16 portrait)
+_TIKTOK_W = 1080
+_TIKTOK_H = 1920
+
+
 # ── Compose ───────────────────────────────────────────────────────────────────
+
+def _compose_tiktok_blur_bg(
+    video_path: Path,
+    audio_path: Path,
+    srt_path: Path,
+    final_path: Path,
+    crf: int,
+    subtitle_position: str = "bottom",
+    delogo_region: tuple[int, int, int, int] | None = None,
+    force_style_override: str | None = None,
+) -> None:
+    """Compose TikTok 9:16 video using a blurred landscape frame as background.
+
+    Layout:
+      - Background: source video scaled by height to fill 1080×1920, center-cropped,
+        then blurred (boxblur).
+      - Foreground: source video scaled to canvas width (1080 px), vertically centered.
+    """
+    srt_escaped = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:")
+    force_style = force_style_override or _SUBTITLE_FORCE_STYLE[("tiktok", subtitle_position)]
+
+    # Background: scale by height to fill canvas, center-crop, blur
+    bg_filter = (
+        f"scale=-2:{_TIKTOK_H},"          # height = 1920, width auto (wider than 1080)
+        f"crop={_TIKTOK_W}:{_TIKTOK_H},"  # center-crop to 1080×1920
+        f"boxblur=20:5"                    # blur
+    )
+
+    # Foreground: delogo (opt) + watermark zoom+crop + scale to canvas width
+    fg_parts = []
+    if delogo_region:
+        dx, dy, dw, dh = delogo_region
+        fg_parts.append(f"delogo=x={dx}:y={dy}:w={dw}:h={dh}")
+    fg_parts += [
+        "scale=iw*1.05:ih*1.05",  # zoom 5% for corner watermark removal
+        "crop=iw/1.05:ih/1.05",
+        f"scale={_TIKTOK_W}:-2",  # fit to canvas width, height auto (even)
+    ]
+    fg_filter = ",".join(fg_parts)
+
+    filter_complex = (
+        f"[0:v]split=2[bg_in][fg_in];"
+        f"[bg_in]{bg_filter}[bg];"
+        f"[fg_in]{fg_filter}[fg];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2[composed];"
+        f"[composed]subtitles={srt_escaped}:force_style='{force_style}'[out]"
+    )
+
+    cmd = [
+        _FFMPEG_BIN, "-y",
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-map", "1:a:0",
+        "-c:v", "libx264",
+        "-crf", str(crf),
+        "-preset", "fast",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
+        str(final_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg TikTok blur-bg compose failed:\n{result.stderr[-3000:]}")
+
 
 def _compose_one(
     video_path: Path,
@@ -97,6 +204,7 @@ def _compose_one(
     extra_vf: str = "",
     subtitle_position: str = "bottom",
     delogo_region: tuple[int, int, int, int] | None = None,
+    force_style_override: str | None = None,
 ) -> None:
     """Run one ffmpeg compose pass.
 
@@ -104,12 +212,15 @@ def _compose_one(
     subtitle/title text before any scaling.  Coordinates come from
     detect_subtitle_region() which already includes 10 px padding.
 
+    force_style_override: when provided, replaces the default ASS force_style
+    (used by auto-positioning to place subs just outside the detected box).
+
     extra_vf is inserted between the watermark crop and the subtitles filter —
     used for the TikTok 9:16 crop filter.
     """
     # subtitles filter requires an absolute path with colons escaped (macOS/Linux)
     srt_escaped = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:")
-    force_style = _SUBTITLE_FORCE_STYLE[(platform, subtitle_position)]
+    force_style = force_style_override or _SUBTITLE_FORCE_STYLE[(platform, subtitle_position)]
 
     vf_parts = []
 
@@ -187,7 +298,10 @@ def compose(
         yt = output_dir / "final_youtube.mp4"
         return yt if yt.exists() else output_dir / "final.mp4"
 
-    video_path = output_dir / "original.mp4"
+    _clean = output_dir / "original_clean.mp4"
+    video_path = _clean if _clean.exists() else output_dir / "original.mp4"
+    if video_path.name == "original_clean.mp4":
+        print("[step6] Using original_clean.mp4 (logos + subtitle removed by step1c)")
     audio_path = output_dir / "audio_vn_full.mp3"
     srt_path   = output_dir / "captions_vn.srt"
 
@@ -226,34 +340,55 @@ def compose(
                 verbose=verbose,
             )
 
+        # Enforce minimum subtitle bbox width of 60% of frame width
+        if bbox:
+            bx, by, bw, bh = bbox
+            min_w = int(src_w * 0.60)
+            if bw < min_w:
+                new_bx = max(0, (src_w - min_w) // 2)
+                bbox = (new_bx, by, min_w, bh)
+                print(f"[step6] Subtitle bbox width {bw}px → expanded to {min_w}px (60% of {src_w}px)")
+
+        # Compute per-platform force_style: subtitle centered, bottom edge at bbox.y - 10
+        yt_force_style: str | None = None
+        tt_force_style: str | None = None
+
         if bbox:
             delogo_region = bbox
             _, by, _, bh = bbox
-            if (by + bh / 2) > src_h / 2:
-                subtitle_position = "top"
-                print(f"[step6] Original text at bottom (y={by} h={bh}) → delogo + subtitles at top")
-            else:
-                subtitle_position = "bottom"
-                print(f"[step6] Original text at top (y={by} h={bh}) → delogo + subtitles at bottom")
+            yt_force_style, tt_force_style = _auto_force_styles(bbox, src_w, src_h)
+            print(f"[step6] Detected box y={by} h={bh} → subtitle bottom at y={by - 10} (MarginV={yt_force_style})")
         else:
             subtitle_position = "bottom"
             print("[step6] No original text detected → using default bottom position")
 
     primary_path: Path | None = None
 
+    is_landscape = src_w > src_h
+
     for plat in remaining:
         if sentinel_map[plat].exists():
             continue
 
-        extra_vf = _get_tiktok_crop(src_w, src_h, tiktok_crop_x) if plat == "tiktok" else ""
-
         final_path = output_dir / f"final_{plat}.mp4"
         print(f"[step6] Composing {plat} …")
-        _compose_one(
-            video_path, audio_path, srt_path, final_path, crf,
-            platform=plat, extra_vf=extra_vf,
-            subtitle_position=subtitle_position, delogo_region=delogo_region,
-        )
+
+        if plat == "tiktok" and is_landscape:
+            # Landscape source → blurred background + centered foreground on 9:16 canvas
+            print(f"[step6] TikTok: blurred background layout ({src_w}×{src_h} → {_TIKTOK_W}×{_TIKTOK_H})")
+            _compose_tiktok_blur_bg(
+                video_path, audio_path, srt_path, final_path, crf,
+                subtitle_position=subtitle_position, delogo_region=delogo_region,
+                force_style_override=tt_force_style,
+            )
+        else:
+            extra_vf = _get_tiktok_crop(src_w, src_h, tiktok_crop_x) if plat == "tiktok" else ""
+            _compose_one(
+                video_path, audio_path, srt_path, final_path, crf,
+                platform=plat, extra_vf=extra_vf,
+                subtitle_position=subtitle_position, delogo_region=delogo_region,
+                force_style_override=yt_force_style if plat == "youtube" else tt_force_style,
+            )
 
         sentinel_map[plat].touch()
         size_mb = final_path.stat().st_size / 1_048_576

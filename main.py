@@ -86,6 +86,7 @@ SENTINELS = {
 }
 
 SENTINEL_1B = ".step1b.done"
+SENTINEL_1C = ".step1c.done"
 
 
 def _clear_sentinels_from(output_dir: Path, from_step: int) -> None:
@@ -177,6 +178,7 @@ def main() -> None:
     # probe to get the ID, then apply --force / --from-step logic.
     from pipeline.step1_download.main import download
     from pipeline.step1b_scenes.main import detect_scenes
+    from pipeline.step_remove_logo.main import clean as clean_video
     from pipeline.step2_extract_audio.main import extract_audio
     from pipeline.step2b_separate_audio.main import separate_audio
     from pipeline.step3_transcribe.main import transcribe
@@ -199,6 +201,7 @@ def main() -> None:
         print("[main] --force: clearing all sentinels")
         _clear_sentinels_from(output_dir, from_step=1)
         (output_dir / SENTINEL_1B).unlink(missing_ok=True)
+        (output_dir / SENTINEL_1C).unlink(missing_ok=True)
         (output_dir / ".step2b.done").unlink(missing_ok=True)
         (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
         (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
@@ -207,6 +210,7 @@ def main() -> None:
         _clear_sentinels_from(output_dir, from_step=args.from_step)
         if args.from_step <= 2:
             (output_dir / SENTINEL_1B).unlink(missing_ok=True)
+            (output_dir / SENTINEL_1C).unlink(missing_ok=True)
         if args.from_step <= 3:  # step2b sits between steps 2 and 3
             (output_dir / ".step2b.done").unlink(missing_ok=True)
         if args.from_step <= 6:
@@ -217,6 +221,9 @@ def main() -> None:
 
     # ── Step 1b: Detect scenes ────────────────────────────────────────────────
     detect_scenes(output_dir)
+
+    # ── Step 1c: Detect + remove logos and burned-in subtitles ───────────────
+    clean_video(output_dir)
 
     # ── Step 2: Extract audio ─────────────────────────────────────────────────
     extract_audio(output_dir)
@@ -239,6 +246,7 @@ def main() -> None:
         crf=args.crf,
         platform=args.platform,
         tiktok_crop_x=args.tiktok_crop_x,
+        subtitle_position="auto",
     )
 
     # ── Step 7: Banner thumbnails ─────────────────────────────────────────────

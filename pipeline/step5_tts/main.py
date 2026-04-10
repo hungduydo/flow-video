@@ -33,8 +33,10 @@ from tqdm import tqdm
 from .tts_providers import TTSProvider, get_provider
 
 MIN_DURATION = 0.3   # seconds — skip TTS for extremely short segments
-SPEED_MIN = 0.9      # atempo lower bound
-SPEED_MAX = 1.2      # atempo upper bound
+SPEED_MIN = 0.9      # atempo lower bound (global safety pass)
+SPEED_MAX = 1.2      # atempo upper bound (global safety pass)
+_SLOT_TOLERANCE = 0.05   # seconds — ignore slot diff smaller than this
+_SLOT_MAX_ATEMPO = 1.30  # per-segment: compress up to 1.30× before trimming
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -99,6 +101,50 @@ def _trim_audio(input_path: Path, output_path: Path, duration: float) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"audio trim failed:\n{result.stderr}")
+
+
+def _fit_to_slot(
+    seg_path: Path,
+    slot_duration: float,
+    audio_vn_dir: Path,
+    idx: str,
+    fmt: dict,
+) -> list[Path]:
+    """Return paths that together fill exactly slot_duration seconds.
+
+    - Within 50 ms: [seg_path] unchanged
+    - TTS shorter than slot: [seg_path, pad_silence]
+    - TTS up to 1.30× longer: [atempo-compressed]
+    - TTS > 1.30× longer: [trimmed to slot]
+    """
+    tts_dur = _get_audio_duration(seg_path)
+    diff = tts_dur - slot_duration
+
+    if abs(diff) <= _SLOT_TOLERANCE:
+        return [seg_path]
+
+    if diff < 0:
+        pad_path = audio_vn_dir / f"seg_{idx}_pad.mp3"
+        _generate_silence(pad_path, -diff, fmt["sample_rate"], fmt["channels"])
+        return [seg_path, pad_path]
+
+    ratio = tts_dur / slot_duration
+    if ratio <= _SLOT_MAX_ATEMPO:
+        fitted_path = audio_vn_dir / f"seg_{idx}_fitted.mp3"
+        cmd = [
+            "ffmpeg", "-y", "-i", str(seg_path),
+            "-af", f"atempo={ratio:.4f}",
+            "-c:a", "libmp3lame", "-q:a", "4",
+            str(fitted_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"atempo failed:\n{result.stderr}")
+        return [fitted_path]
+
+    trimmed_path = audio_vn_dir / f"seg_{idx}_trim.mp3"
+    _trim_audio(seg_path, trimmed_path, slot_duration)
+    return [trimmed_path]
 
 
 def _concat_segments(segment_paths: list[Path], output_path: Path) -> None:
@@ -253,7 +299,9 @@ def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
                 _generate_silence(sil_path, original_duration, fmt["sample_rate"], fmt["channels"])
                 all_paths.append(sil_path)
         else:
-            all_paths.append(seg_path)
+            all_paths.extend(
+                _fit_to_slot(seg_path, original_duration, audio_vn_dir, idx, fmt)
+            )
 
         prev_end = sub_end
 
@@ -287,7 +335,14 @@ def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
 
     speed_adjusted_path = output_dir / "audio_vn_speech_adjusted.mp3"
     if original_duration > 0 and vn_duration > 0:
-        _apply_global_speed(speech_path, speed_adjusted_path, vn_duration, original_duration)
+        ratio = vn_duration / original_duration
+        if abs(ratio - 1.0) < 0.02:
+            # Per-slot fitting already matched durations closely — skip global pass
+            print(f"[step5] Duration drift {ratio:.4f} within 2% — no global speed adjust needed")
+            import shutil as _shutil
+            _shutil.copy2(speech_path, speed_adjusted_path)
+        else:
+            _apply_global_speed(speech_path, speed_adjusted_path, vn_duration, original_duration)
     else:
         print("[step5] WARNING: could not determine original duration, skipping speed adjust")
         speech_path.rename(speed_adjusted_path)

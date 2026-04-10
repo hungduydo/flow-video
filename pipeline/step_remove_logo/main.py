@@ -603,7 +603,6 @@ def detect_all_regions_llm(
                 if verbose:
                     print(f"[remove_logo/llm] frame {frame_idx}: empty response")
                 continue
-            print("hello")
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
             if verbose:
@@ -752,7 +751,6 @@ def remove_logo(
           f"(provider={provider!r}) …")
 
     subtitle_bbox: tuple[int, int, int, int] | None = None
-    print("hello")
     if provider == "llm":
         regions, subtitle_bbox = detect_all_regions_llm(
             input_path, ollama_url=ollama_url, model=model,
@@ -761,26 +759,86 @@ def remove_logo(
     else:
         regions = detect_watermark_regions(input_path, verbose=verbose)
 
+    # Enforce minimum subtitle bbox width of 60% of frame width
+    if subtitle_bbox:
+        vid_w, _ = _get_dimensions(input_path)
+        min_w = int(vid_w * 0.60)
+        sx, sy, sw, sh = subtitle_bbox
+        if sw < min_w:
+            new_sx = max(0, (vid_w - min_w) // 2)
+            subtitle_bbox = (new_sx, sy, min_w, sh)
+            print(f"[remove_logo] Subtitle bbox width {sw}px → expanded to {min_w}px (60% of {vid_w}px)")
+
     # Save detected regions so downstream steps (e.g. step6_compose) can use them
     _save_detected_regions(input_path.parent, regions, subtitle_bbox)
 
-    if not regions:
-        print("[remove_logo] No watermarks detected — copying input unchanged")
+    # Build combined removal list: logos + subtitle bbox
+    all_regions = list(regions)
+    if subtitle_bbox:
+        all_regions.append(("subtitle", *subtitle_bbox))
+
+    if not all_regions:
+        print("[remove_logo] No watermarks or subtitle detected — copying input unchanged")
         shutil.copy2(input_path, output_path)
         return output_path
 
     for corner, x, y, w, h in regions:
         print(f"[remove_logo]   {corner}: x={x} y={y} w={w} h={h}")
-    print(f"[remove_logo] Removing {len(regions)} region(s) with mode={quality!r} …")
+    if subtitle_bbox:
+        sx, sy, sw, sh = subtitle_bbox
+        print(f"[remove_logo]   subtitle: x={sx} y={sy} w={sw} h={sh}")
+    print(f"[remove_logo] Removing {len(all_regions)} region(s) with mode={quality!r} …")
 
     if quality == "fast":
-        _remove_fast(input_path, output_path, regions)
+        _remove_fast(input_path, output_path, all_regions)
     else:
-        _remove_high(input_path, output_path, regions)
+        _remove_high(input_path, output_path, all_regions)
 
     size_mb = output_path.stat().st_size / 1_048_576
     print(f"[remove_logo] Done → {output_path} ({size_mb:.1f} MB)")
     return output_path
+
+
+def clean(
+    output_dir: Path,
+    quality: str = "fast",
+    provider: str = "llm",
+    ollama_url: str = "https://ollama.com",
+    model: str = "gemini-3-flash-preview:cloud",
+    api_key: str | None = None,
+    verbose: bool = False,
+) -> Path:
+    """Step 1c: detect + remove logos + subtitle from original.mp4 → original_clean.mp4.
+
+    Writes detected_regions.json for use by step6_compose.
+    Sentinel: .step1c.done
+    """
+    output_dir = Path(output_dir)
+    sentinel   = output_dir / ".step1c.done"
+    clean_path = output_dir / "original_clean.mp4"
+
+    if sentinel.exists():
+        print("[step1c] Skip — already done")
+        return clean_path if clean_path.exists() else output_dir / "original.mp4"
+
+    input_path = output_dir / "original.mp4"
+    if not input_path.exists():
+        raise FileNotFoundError(f"Required file missing: {input_path}")
+
+    result = remove_logo(
+        input_path,
+        output_path=clean_path,
+        quality=quality,
+        provider=provider,
+        ollama_url=ollama_url,
+        model=model,
+        api_key=api_key,
+        verbose=verbose,
+    )
+
+    sentinel.touch()
+    print(f"[step1c] Done → {result}")
+    return result
 
 
 def _save_detected_regions(
