@@ -20,6 +20,7 @@ Output:
   output/{video_id}/.step5.done            (sentinel)
 """
 
+import json
 import re
 import subprocess
 import sys
@@ -73,6 +74,31 @@ def _generate_silence(output: Path, duration: float, sample_rate: int = 24000, c
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"silence generation failed:\n{result.stderr}")
+
+
+def _has_cut_in_range(cuts: set[float], start: float, end: float) -> bool:
+    """Return True if any cut falls within [start, end] (inclusive boundaries)."""
+    return any(start <= c <= end for c in cuts)
+
+
+def _earliest_cut_in_range(cuts: set[float], start: float, end: float) -> float | None:
+    """Return the earliest cut strictly inside (start, end), or None."""
+    in_range = [c for c in cuts if start < c < end]
+    return min(in_range) if in_range else None
+
+
+def _trim_audio(input_path: Path, output_path: Path, duration: float) -> None:
+    """Trim audio to at most `duration` seconds using ffmpeg -t."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(input_path),
+        "-t", str(duration),
+        "-c:a", "libmp3lame", "-q:a", "4",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"audio trim failed:\n{result.stderr}")
 
 
 def _concat_segments(segment_paths: list[Path], output_path: Path) -> None:
@@ -162,6 +188,13 @@ def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
     subtitles = list(srt.parse(vn_srt_path.read_text(encoding="utf-8")))
     print(f"[step5] Generating TTS for {len(subtitles)} segments (provider: {provider}) …")
 
+    cuts: set[float] = set()
+    scenes_path = output_dir / "scenes.json"
+    if scenes_path.exists():
+        data = json.loads(scenes_path.read_text(encoding="utf-8"))
+        cuts = set(data.get("cuts", []))
+        print(f"[step5] Loaded {len(cuts)} scene cut(s) from scenes.json")
+
     if provider == "elevenlabs":
         total_chars = sum(len(sub.content.strip()) for sub in subtitles)
         print(f"[step5] ElevenLabs: ~{total_chars:,} characters to synthesize")
@@ -174,8 +207,11 @@ def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
         sub_end = sub.end.total_seconds()
         idx = f"{sub.index:04d}"
 
-        # Insert silence for any gap before this segment
+        # Insert silence for any gap before this segment.
+        # Enforce MIN_DURATION gap at scene cut boundaries.
         gap = sub_start - prev_end
+        if _has_cut_in_range(cuts, prev_end, sub_start):
+            gap = max(gap, MIN_DURATION)
         if gap > 0.05:
             gap_path = audio_vn_dir / f"gap_{i:04d}.mp3"
             _generate_silence(gap_path, gap, fmt["sample_rate"], fmt["channels"])
@@ -197,7 +233,28 @@ def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
         except Exception as exc:
             tqdm.write(f"[step5] WARNING: TTS failed for seg {idx} ({text!r:.50}): {exc}; using silence")
             _generate_silence(seg_path, original_duration, fmt["sample_rate"], fmt["channels"])
-        all_paths.append(seg_path)
+
+        # Scene-cut trim: if a cut falls strictly inside this subtitle slot,
+        # trim TTS to the cut and pad the remainder with silence so A/V sync holds.
+        cut_inside = _earliest_cut_in_range(cuts, sub_start, sub_end)
+        if cut_inside is not None:
+            trim_duration = cut_inside - sub_start
+            pad_duration = sub_end - cut_inside
+            if trim_duration > MIN_DURATION:
+                trimmed_path = audio_vn_dir / f"seg_{idx}_trim.mp3"
+                _trim_audio(seg_path, trimmed_path, trim_duration)
+                pad_path = audio_vn_dir / f"seg_{idx}_pad.mp3"
+                _generate_silence(pad_path, pad_duration, fmt["sample_rate"], fmt["channels"])
+                all_paths.append(trimmed_path)
+                all_paths.append(pad_path)
+            else:
+                # Slot before the cut is too short — emit full silence for the slot
+                sil_path = audio_vn_dir / f"seg_{idx}_cutsil.mp3"
+                _generate_silence(sil_path, original_duration, fmt["sample_rate"], fmt["channels"])
+                all_paths.append(sil_path)
+        else:
+            all_paths.append(seg_path)
+
         prev_end = sub_end
 
     # If no speakable segments (e.g. music-only video), skip TTS entirely

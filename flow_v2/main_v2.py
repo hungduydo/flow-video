@@ -64,6 +64,8 @@ _NUMBERED_SENTINELS = {
     6: ".step6.done",
 }
 
+_SENTINEL_1B = ".step1b.done"
+
 
 def _clear_sentinels_from(output_dir: Path, from_step: int) -> None:
     for step, name in _NUMBERED_SENTINELS.items():
@@ -72,6 +74,8 @@ def _clear_sentinels_from(output_dir: Path, from_step: int) -> None:
             if sentinel.exists():
                 sentinel.unlink()
                 print(f"  Cleared sentinel for step {step}")
+    if from_step <= 2:
+        (output_dir / _SENTINEL_1B).unlink(missing_ok=True)
     # step2b sits between steps 2 and 3
     if from_step <= 3:
         (output_dir / ".step2b.done").unlink(missing_ok=True)
@@ -136,6 +140,7 @@ def main() -> None:
     output_base.mkdir(parents=True, exist_ok=True)
 
     from pipeline.step1_download import download
+    from pipeline.step1b_scenes import detect_scenes
     from pipeline.step2_extract_audio import extract_audio
     from flow_v2.classifier import classify, VideoType
 
@@ -153,12 +158,16 @@ def main() -> None:
     if args.force:
         print("[main] --force: clearing all sentinels")
         _clear_sentinels_from(output_dir, from_step=1)
+        (output_dir / _SENTINEL_1B).unlink(missing_ok=True)
         _clear_classify_sentinel(output_dir)
     elif args.from_step is not None:
         print(f"[main] --from-step {args.from_step}: clearing sentinels")
         _clear_sentinels_from(output_dir, from_step=args.from_step)
         if args.from_step <= 2:
             _clear_classify_sentinel(output_dir)
+
+    # Step 1b: detect scene cuts (writes scenes.json; optional for downstream steps)
+    detect_scenes(output_dir)
 
     # Step 2: all workflows need audio.wav
     extract_audio(output_dir)

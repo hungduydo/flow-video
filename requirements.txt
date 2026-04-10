@@ -13,6 +13,11 @@ tqdm
 srt
 opencv-python
 ollama
+Pillow>=10.0
+
+# Optional: higher-quality scene detection for step1b_scenes
+# (primary path uses ffmpeg scdet which is always available)
+# pip install "scenedetect>=0.6,<1.0"
 
 # Optional: YouTube upload (--upload flag in step7)
 # pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib

@@ -61,10 +61,27 @@ def parse_json_response(text: str, expected: int) -> list[str]:
     return lines[:expected]
 
 
+def _build_scene_note(subs: list[srt.Subtitle], cuts: list[float] | None) -> str:
+    """Return a note about scene boundaries that fall within this batch, or ''."""
+    if not cuts or not subs:
+        return ""
+    batch_start = subs[0].start.total_seconds()
+    batch_end = subs[-1].end.total_seconds()
+    relevant = [c for c in cuts if batch_start <= c <= batch_end]
+    if not relevant:
+        return ""
+    timestamps = ", ".join(f"{c:.2f}s" for c in sorted(relevant))
+    return (
+        f"\n[Lưu ý cảnh quay: có cắt cảnh tại {timestamps}. "
+        "Hãy dịch ngắn gọn ở các phân đoạn gần ranh giới cảnh.]"
+    )
+
+
 def build_prompt(
     subs: list[srt.Subtitle],
     context: list[srt.Subtitle],
     system_prompt: str,
+    cuts: list[float] | None = None,
 ) -> str:
     """Build the user-facing translation prompt with optional context prefix."""
     parts: list[str] = [system_prompt, ""]
@@ -77,5 +94,9 @@ def build_prompt(
     parts.extend(s.content.strip() for s in subs)
     parts.append("")
     parts.append('Trả về CHỈ một mảng JSON các chuỗi đã dịch, đúng thứ tự: ["dịch 1", "dịch 2", ...]')
+
+    scene_note = _build_scene_note(subs, cuts)
+    if scene_note:
+        parts.append(scene_note)
 
     return "\n".join(parts)

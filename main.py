@@ -82,7 +82,10 @@ SENTINELS = {
     4: ".step4.done",
     5: ".step5.done",
     6: ".step6.done",
+    7: ".step7.done",
 }
+
+SENTINEL_1B = ".step1b.done"
 
 
 def _clear_sentinels_from(output_dir: Path, from_step: int) -> None:
@@ -173,12 +176,14 @@ def main() -> None:
     # We need the video_id before we can clear sentinels, so always run step 1
     # probe to get the ID, then apply --force / --from-step logic.
     from pipeline.step1_download.main import download
+    from pipeline.step1b_scenes.main import detect_scenes
     from pipeline.step2_extract_audio.main import extract_audio
     from pipeline.step2b_separate_audio.main import separate_audio
     from pipeline.step3_transcribe.main import transcribe
     from pipeline.step4_translate.main import translate
     from pipeline.step5_tts.main import generate_tts
     from pipeline.step6_compose.main import compose
+    from pipeline.step7_banner.main import banner
 
     print("=" * 60)
     print("flow-video pipeline")
@@ -193,17 +198,25 @@ def main() -> None:
     if args.force:
         print("[main] --force: clearing all sentinels")
         _clear_sentinels_from(output_dir, from_step=1)
+        (output_dir / SENTINEL_1B).unlink(missing_ok=True)
         (output_dir / ".step2b.done").unlink(missing_ok=True)
         (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
         (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
     elif args.from_step is not None:
         print(f"[main] --from-step {args.from_step}: clearing sentinels from step {args.from_step}")
         _clear_sentinels_from(output_dir, from_step=args.from_step)
+        if args.from_step <= 2:
+            (output_dir / SENTINEL_1B).unlink(missing_ok=True)
         if args.from_step <= 3:  # step2b sits between steps 2 and 3
             (output_dir / ".step2b.done").unlink(missing_ok=True)
         if args.from_step <= 6:
             (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
             (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
+        if args.from_step <= 7:
+            (output_dir / ".step7.done").unlink(missing_ok=True)
+
+    # ── Step 1b: Detect scenes ────────────────────────────────────────────────
+    detect_scenes(output_dir)
 
     # ── Step 2: Extract audio ─────────────────────────────────────────────────
     extract_audio(output_dir)
@@ -228,6 +241,9 @@ def main() -> None:
         tiktok_crop_x=args.tiktok_crop_x,
     )
 
+    # ── Step 7: Banner thumbnails ─────────────────────────────────────────────
+    banner(output_dir, platform=args.platform)
+
     # ── Done ──────────────────────────────────────────────────────────────────
     metadata_path = output_dir / "metadata.json"
     title = ""
@@ -239,7 +255,8 @@ def main() -> None:
     print("DONE")
     if title:
         print(f"  Title:  {title}")
-    print(f"  Output: {final_path}")
+    print(f"  Video:   {final_path}")
+    print(f"  Banner:  {output_dir / 'banner_youtube.jpg'}")
     print("=" * 60)
 
 

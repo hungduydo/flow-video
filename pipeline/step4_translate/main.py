@@ -43,6 +43,23 @@ def translate(output_dir: Path, provider: str = "gemini") -> Path:
         except Exception:
             pass
 
+    cuts: list[float] = []
+    scenes_path = output_dir / "scenes.json"
+    if scenes_path.exists():
+        try:
+            data = json.loads(scenes_path.read_text(encoding="utf-8"))
+            cuts = data.get("cuts", [])
+            if cuts:
+                timestamps = ", ".join(f"{c:.2f}s" for c in cuts)
+                system_prompt = (
+                    system_prompt
+                    + f"\n\n[Cảnh quay: có cắt cảnh tại {timestamps}. "
+                    "Dịch ngắn gọn ở các phân đoạn gần ranh giới cảnh.]"
+                )
+                print(f"[step4] Loaded {len(cuts)} scene cut(s) from scenes.json")
+        except Exception:
+            pass
+
     subtitles = list(srt.parse(cn_srt_path.read_text(encoding="utf-8")))
     raw_count = len(subtitles)
     subtitles = clean_subtitles(subtitles)

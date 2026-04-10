@@ -6,6 +6,7 @@ The pipeline is organized with each step in its own folder for clean separation 
 ```
 pipeline/
 ├── step1_download/          # Download Bilibili videos
+├── step1b_scenes/           # Scene cut detection → scenes.json
 ├── step2_extract_audio/     # Audio extraction & normalization
 ├── step2b_separate_audio/   # Vocal/accompaniment separation
 ├── step3_transcribe/        # Speech-to-text (Whisper/Deepgram) + noise cleanup
@@ -13,7 +14,8 @@ pipeline/
 │   └── providers/           # Pluggable translation implementations (gemini.py, claude.py)
 ├── step5_tts/               # Text-to-speech generation
 │   └── tts_providers/       # Pluggable TTS implementations
-└── step6_compose/           # Final video composition
+├── step6_compose/           # Final video composition
+└── step_remove_logo/        # Optional: LLM-based watermark removal
 ```
 
 **Guidelines:**
@@ -24,6 +26,18 @@ pipeline/
 - Main entry points export from `main.py` in each step folder
 - Every step has a `__main__.py` so it can be run with `python -m pipeline.stepN`
 - `main.py` files are imported by `pipeline.stepN` package (see `__init__.py`)
+
+## Step 1b — Scene detection
+
+`step1b_scenes/main.py` runs between step1 and step2:
+- Primary: `ffmpeg scdet` filter — always available, no extra deps.
+- Fallback: PySceneDetect `AdaptiveDetector` if ffmpeg yields 0 cuts (`pip install "scenedetect>=0.6,<1.0"`).
+- Output: `scenes.json` — `{"cuts": [...], "scenes": [...], "detector": "...", "video_duration": N}`.
+- `scenes.json` is **optional** — all downstream steps work unchanged if it's absent.
+
+Downstream consumers:
+- **step4**: embeds cut timestamps into `system_prompt` for concise translation near boundaries.
+- **step5**: enforces gap silence at cut boundaries; trims TTS that spans a cut, padding remainder with silence to preserve A/V sync.
 
 ## Step 4 — Translation architecture
 
@@ -46,16 +60,3 @@ When the user's request matches an available skill, ALWAYS invoke it using the S
 tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
 The skill has specialized workflows that produce better results than ad-hoc answers.
 
-Key routing rules:
-- Product ideas, "is this worth building", brainstorming → invoke office-hours
-- Bugs, errors, "why is this broken", 500 errors → invoke investigate
-- Ship, deploy, push, create PR → invoke ship
-- QA, test the site, find bugs → invoke qa
-- Code review, check my diff → invoke review
-- Update docs after shipping → invoke document-release
-- Weekly retro → invoke retro
-- Design system, brand → invoke design-consultation
-- Visual audit, design polish → invoke design-review
-- Architecture review → invoke plan-eng-review
-- Save progress, checkpoint, resume → invoke checkpoint
-- Code quality, health check → invoke health
