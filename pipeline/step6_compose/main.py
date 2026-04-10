@@ -6,15 +6,14 @@ Operations (in one ffmpeg pass):
      (scale to 105%, then crop back to original dimensions)
      Note: crop's iw/ih reference the *scaled* frame, not the original.
   2. Replace audio with audio_vn_full.mp3
-  3. Burn Vietnamese captions (native ASS format with platform styling)
+  3. Burn Vietnamese captions from captions_vn.srt
 
 Platform profiles:
-  youtube  16:9, white-text-on-black-box ASS captions, bottom center
-  tiktok   9:16 center crop, larger bold captions, higher position
+  youtube  16:9, subtitles bottom center
+  tiktok   9:16 center crop, subtitles higher position
   both     produces both final_youtube.mp4 and final_tiktok.mp4
 
 Output:
-  output/{video_id}/captions_vn_{platform}.ass   (intermediate, retained for debugging)
   output/{video_id}/final_youtube.mp4            (--platform youtube or both)
   output/{video_id}/final_tiktok.mp4             (--platform tiktok or both)
   output/{video_id}/final.mp4                    (copy of youtube output, backward compat)
@@ -23,116 +22,34 @@ Output:
   output/{video_id}/.step6.done                  (legacy sentinel, backward compat)
 """
 
+import json
 import shutil
 import subprocess
 import sys
-from datetime import timedelta
 from pathlib import Path
 
-import srt
-
 # ffmpeg-full (brew install ffmpeg-full) includes libass required for the
-# ass filter.  Fall back to plain ffmpeg if it's not installed yet.
+# subtitles filter.  Fall back to plain ffmpeg if it's not installed yet.
 _FFMPEG_FULL = Path("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg")
 _FFMPEG_BIN = str(_FFMPEG_FULL) if _FFMPEG_FULL.exists() else "ffmpeg"
 
 
-# ── ASS styling ───────────────────────────────────────────────────────────────
+# ── Subtitle position force_style ─────────────────────────────────────────────
 #
-# ASS colour format: &HAABBGGRR  (alpha, blue, green, red — reversed channels)
-#   &H00FFFFFF = fully opaque white text
-#   &H80000000 = 50% transparent black box  (alpha=0x80)  — YouTube style
-#   &H99000000 = 60% transparent black box  (alpha=0x99)  — TikTok (brighter screens)
+# force_style Alignment values (numpad layout):
+#   7  8  9     (top-left, top-center, top-right)
+#   4  5  6
+#   1  2  3     (bottom-left, bottom-center, bottom-right)
 #
-# BorderStyle values in native ASS format:
-#   1 = outline only   3 = opaque background box  (what we want)
-# Note: FFmpeg's force_style= uses a different numbering (4 = box in that context).
-# Since we're writing a native .ass file, BorderStyle=3 is the correct value.
+# Use "top" when the source video has a burned-in title at the bottom
+# that subtitles would otherwise cover.
 
-_ASS_STYLE_YOUTUBE = (
-    "Style: Default,"
-    "Arial,22,"            # font, size
-    "&H00FFFFFF,"          # PrimaryColour: white text
-    "&H000000FF,"          # SecondaryColour (unused)
-    "&H00000000,"          # OutlineColour (unused with BorderStyle=3)
-    "&H80000000,"          # BackColour: 50% black box
-    "0,0,0,0,"             # Bold, Italic, Underline, StrikeOut
-    "100,100,0,0,"         # ScaleX, ScaleY, Spacing, Angle
-    "3,"                   # BorderStyle=3: opaque background box
-    "0,0,"                 # Outline, Shadow
-    "2,"                   # Alignment=2: bottom center
-    "10,10,30,1"           # MarginL, MarginR, MarginV, Encoding
-)
-
-_ASS_STYLE_TIKTOK = (
-    "Style: Default,"
-    "Arial,28,"
-    "&H00FFFFFF,"
-    "&H000000FF,"
-    "&H00000000,"
-    "&H99000000,"          # 60% black box — more opaque for bright mobile screens
-    "-1,0,0,0,"            # Bold=-1 (on) for readability on small screens
-    "100,100,0,0,"
-    "3,"
-    "0,0,"
-    "2,"
-    "10,10,80,1"           # MarginV=80: higher to avoid TikTok UI / thumbs
-)
-
-_ASS_STYLES = {"youtube": _ASS_STYLE_YOUTUBE, "tiktok": _ASS_STYLE_TIKTOK}
-
-_ASS_HEADER = """\
-[Script Info]
-ScriptType: v4.00+
-PlayResX: {width}
-PlayResY: {height}
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-{style}
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-
-def _td_to_ass(td: timedelta) -> str:
-    """Convert timedelta to ASS timestamp H:MM:SS.cc (centiseconds)."""
-    total_cs = int(td.total_seconds() * 100)
-    cc = total_cs % 100
-    total_s = total_cs // 100
-    ss = total_s % 60
-    mm = (total_s // 60) % 60
-    hh = total_s // 3600
-    return f"{hh}:{mm:02d}:{ss:02d}.{cc:02d}"
-
-
-def _srt_to_ass(srt_path: Path, platform: str, width: int, height: int) -> Path:
-    """Convert SRT to native ASS with platform-appropriate styling.
-
-    width/height should be the *output* frame dimensions for this platform
-    (so TikTok passes the cropped 9:16 dimensions, not the source dimensions).
-
-    Output: same directory as srt_path, named captions_vn_{platform}.ass.
-    Retained as a pipeline artifact — not cleaned up after compose.
-    Returns the Path to the written .ass file.
-    """
-    ass_path = srt_path.parent / f"captions_vn_{platform}.ass"
-    style = _ASS_STYLES[platform]
-
-    subtitles = list(srt.parse(srt_path.read_text(encoding="utf-8")))
-
-    lines = [_ASS_HEADER.format(width=width, height=height, style=style)]
-    for sub in subtitles:
-        start = _td_to_ass(sub.start)
-        end = _td_to_ass(sub.end)
-        # Replace newlines with ASS hard newline; escape { to avoid ASS override tags
-        text = sub.content.strip().replace("{", "\\{").replace("\n", "\\N")
-        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
-
-    ass_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return ass_path
+_SUBTITLE_FORCE_STYLE = {
+    ("youtube", "bottom"): "Alignment=2,MarginV=30",
+    ("youtube", "top"):    "Alignment=8,MarginV=20",
+    ("tiktok",  "bottom"): "Alignment=2,MarginV=80",   # higher to avoid TikTok UI
+    ("tiktok",  "top"):    "Alignment=8,MarginV=30",
+}
 
 
 # ── Video helpers ─────────────────────────────────────────────────────────────
@@ -173,26 +90,41 @@ def _get_tiktok_crop(width: int, height: int, crop_x: int | None = None) -> str:
 def _compose_one(
     video_path: Path,
     audio_path: Path,
-    ass_path: Path,
+    srt_path: Path,
     final_path: Path,
     crf: int,
+    platform: str = "youtube",
     extra_vf: str = "",
+    subtitle_position: str = "bottom",
+    delogo_region: tuple[int, int, int, int] | None = None,
 ) -> None:
     """Run one ffmpeg compose pass.
 
-    extra_vf is inserted between the watermark crop and the ASS overlay —
+    delogo_region: (x, y, w, h) in original-frame pixels — removes burned-in
+    subtitle/title text before any scaling.  Coordinates come from
+    detect_subtitle_region() which already includes 10 px padding.
+
+    extra_vf is inserted between the watermark crop and the subtitles filter —
     used for the TikTok 9:16 crop filter.
     """
-    # ass filter requires an absolute path with colons escaped (macOS/Linux)
-    ass_escaped = str(ass_path.resolve()).replace("\\", "/").replace(":", "\\:")
+    # subtitles filter requires an absolute path with colons escaped (macOS/Linux)
+    srt_escaped = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:")
+    force_style = _SUBTITLE_FORCE_STYLE[(platform, subtitle_position)]
 
-    vf_parts = [
+    vf_parts = []
+
+    # delogo first — coordinates are in original frame space, before any scaling
+    if delogo_region:
+        dx, dy, dw, dh = delogo_region
+        vf_parts.append(f"delogo=x={dx}:y={dy}:w={dw}:h={dh}")
+
+    vf_parts += [
         "scale=iw*1.05:ih*1.05",    # zoom 5% (watermark removal)
         "crop=iw/1.05:ih/1.05",      # crop back to original dims (refs scaled frame)
     ]
     if extra_vf:
         vf_parts.append(extra_vf)    # TikTok 9:16 crop
-    vf_parts.append(f"ass={ass_escaped}")
+    vf_parts.append(f"subtitles={srt_escaped}:force_style='{force_style}'")
 
     cmd = [
         _FFMPEG_BIN, "-y",
@@ -220,10 +152,21 @@ def compose(
     crf: int = 23,
     platform: str = "youtube",
     tiktok_crop_x: int | None = None,
+    subtitle_position: str = "bottom",
+    ollama_url: str = "https://ollama.com",
+    model: str = "gemini-3-flash-preview:cloud",
+    ollama_api_key: str | None = None,
+    verbose: bool = False,
 ) -> Path:
-    """Compose final video(s) with professional ASS captions.
+    """Compose final video(s) with burned-in Vietnamese captions.
 
     platform: "youtube" | "tiktok" | "both"
+    subtitle_position: "bottom" (default) | "top" | "auto"
+        "auto" uses a vision LLM (via Ollama) to detect where the source video
+        has burned-in title/subtitle text, then places Vietnamese subtitles at
+        the opposite region so they don't cover the original.
+
+    ollama_url / model / ollama_api_key: used only when subtitle_position="auto".
 
     Sentinels: .step6.youtube.done / .step6.tiktok.done (per-platform).
     Legacy .step6.done and final.mp4 are also written for backward compat.
@@ -255,24 +198,62 @@ def compose(
     src_w, src_h = _get_video_dimensions(video_path)
     print(f"[step6] Source: {src_w}x{src_h}, platform={platform}, CRF={crf}")
 
+    # Resolve subtitle region: prefer detected_regions.json (written by step_remove_logo),
+    # fall back to running LLM detection directly if the file doesn't exist.
+    delogo_region: tuple[int, int, int, int] | None = None
+    if subtitle_position == "auto":
+        bbox: tuple[int, int, int, int] | None = None
+
+        regions_file = output_dir / "detected_regions.json"
+        if regions_file.exists():
+            try:
+                data = json.loads(regions_file.read_text(encoding="utf-8"))
+                sub = data.get("subtitle")
+                if sub:
+                    bbox = (sub["x"], sub["y"], sub["w"], sub["h"])
+                    print(f"[step6] Loaded subtitle region from {regions_file.name}")
+            except Exception as exc:
+                print(f"[step6] Warning: could not read {regions_file.name} — {exc}")
+
+        if bbox is None:
+            from .detect_subtitle import detect_subtitle_region
+            print("[step6] detected_regions.json not found — running LLM detection …")
+            bbox = detect_subtitle_region(
+                video_path,
+                ollama_url=ollama_url,
+                model=model,
+                api_key=ollama_api_key,
+                verbose=verbose,
+            )
+
+        if bbox:
+            delogo_region = bbox
+            _, by, _, bh = bbox
+            if (by + bh / 2) > src_h / 2:
+                subtitle_position = "top"
+                print(f"[step6] Original text at bottom (y={by} h={bh}) → delogo + subtitles at top")
+            else:
+                subtitle_position = "bottom"
+                print(f"[step6] Original text at top (y={by} h={bh}) → delogo + subtitles at bottom")
+        else:
+            subtitle_position = "bottom"
+            print("[step6] No original text detected → using default bottom position")
+
     primary_path: Path | None = None
 
     for plat in remaining:
         if sentinel_map[plat].exists():
             continue
 
-        if plat == "tiktok":
-            out_w = int(src_h * 9 / 16)   # 9:16 output width
-            out_h = src_h
-            ass_path = _srt_to_ass(srt_path, plat, out_w, out_h)
-            extra_vf = _get_tiktok_crop(src_w, src_h, tiktok_crop_x)
-        else:
-            ass_path = _srt_to_ass(srt_path, plat, src_w, src_h)
-            extra_vf = ""
+        extra_vf = _get_tiktok_crop(src_w, src_h, tiktok_crop_x) if plat == "tiktok" else ""
 
         final_path = output_dir / f"final_{plat}.mp4"
         print(f"[step6] Composing {plat} …")
-        _compose_one(video_path, audio_path, ass_path, final_path, crf, extra_vf)
+        _compose_one(
+            video_path, audio_path, srt_path, final_path, crf,
+            platform=plat, extra_vf=extra_vf,
+            subtitle_position=subtitle_position, delogo_region=delogo_region,
+        )
 
         sentinel_map[plat].touch()
         size_mb = final_path.stat().st_size / 1_048_576
@@ -303,6 +284,17 @@ if __name__ == "__main__":
                         choices=["youtube", "tiktok", "both"])
     parser.add_argument("--tiktok-crop-x", type=int, default=None,
                         dest="tiktok_crop_x")
+    parser.add_argument("--subtitle-position", default="bottom",
+                        choices=["bottom", "top", "auto"], dest="subtitle_position",
+                        help="'top' keeps source bottom titles visible; "
+                             "'auto' detects via LLM and places at opposite region")
+    parser.add_argument("--ollama-url", default="https://ollama.com", dest="ollama_url")
+    parser.add_argument("--model", default="gemini-3-flash-preview:cloud")
+    parser.add_argument("--ollama-api-key", default=None, dest="ollama_api_key")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     compose(Path(args.output_dir), crf=args.crf, platform=args.platform,
-            tiktok_crop_x=args.tiktok_crop_x)
+            tiktok_crop_x=args.tiktok_crop_x,
+            subtitle_position=args.subtitle_position,
+            ollama_url=args.ollama_url, model=args.model,
+            ollama_api_key=args.ollama_api_key, verbose=args.verbose)

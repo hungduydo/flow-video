@@ -459,9 +459,9 @@ def _remove_high(
 # ── LLM detection (Ollama vision) ─────────────────────────────────────────────
 
 _LLM_SYSTEM_PROMPT = """\
-You are a video watermark/logo detector. Given a single video frame image, \
-identify every persistent channel logo, network bug, or watermark overlaid \
-in any corner of the frame.
+You are a video overlay detector. Given a single video frame, identify:
+1. Every persistent channel logo, network bug, or watermark in any corner.
+2. Any burned-in subtitle, caption, or title text overlay anywhere in the frame.
 
 MUST: Respond ONLY with valid JSON matching exactly this schema — no markdown, no prose:
 {
@@ -473,13 +473,21 @@ MUST: Respond ONLY with valid JSON matching exactly this schema — no markdown,
       "width": <float 0-1, normalised>,
       "height": <float 0-1, normalised>
     }
-  ]
+  ],
+  "subtitle": {
+    "detected": <true|false>,
+    "x":      <float 0-1, left edge normalised to frame width>,
+    "y":      <float 0-1, top edge normalised to frame height>,
+    "width":  <float 0-1, normalised>,
+    "height": <float 0-1, normalised>
+  }
 }
 
 Rules:
-- If no watermark exists return {"watermarks": []}
-- Only flag persistent corner overlays (logos, bugs, channel IDs, copyright text)
-- Be conservative: when unsure, omit the watermark
+- watermarks: only persistent corner overlays (logos, bugs, channel IDs, copyright). Empty array if none.
+- subtitle: burned-in text overlays (title cards, captions, channel names). NOT scene text (signs, books, screens in the video).
+- subtitle x/y/width/height must be 0 when detected=false.
+- Be conservative: when unsure, omit watermarks and set subtitle detected=false.
 """
 
 
@@ -527,7 +535,7 @@ def _ollama_chat(
     return content
 
 
-def detect_watermark_regions_llm(
+def detect_all_regions_llm(
     video_path: Path,
     n_frames: int = 5,
     ollama_url: str = "https://ollama.com",
@@ -535,16 +543,21 @@ def detect_watermark_regions_llm(
     api_key: str | None = None,
     min_votes: int | None = None,
     verbose: bool = False,
-) -> list[tuple[str, int, int, int, int]]:
-    """Detect watermark regions using a vision LLM via Ollama Cloud.
+) -> tuple[list[tuple[str, int, int, int, int]], tuple[int, int, int, int] | None]:
+    """Detect logo watermarks AND burned-in subtitle region in one LLM pass.
 
-    Samples *n_frames* evenly from the middle 60 % of the video, asks the LLM
-    to identify watermarks in each frame, then aggregates votes across frames.
-    A corner is reported only when it receives at least *min_votes* detections
-    (default: majority of sampled frames).
+    Samples n_frames from the middle 60% of the video. Each frame is sent to
+    the vision LLM once; the response contains both watermark corners and the
+    subtitle bounding box.
 
-    api_key: Ollama Cloud API key. Falls back to OLLAMA_API_KEY env var.
-    Returns a list of (corner_name, x, y, w, h) in pixels.
+    Logo aggregation  : majority-vote per corner; average normalised coords.
+    Subtitle aggregation: min(x), avg(y), max(w), avg(h) across detected frames,
+                          then converted to pixels with 10 px padding.
+
+    Returns:
+        (logos, subtitle_bbox)
+        logos        — list of (corner_name, x, y, w, h) in pixels
+        subtitle_bbox — (x, y, w, h) in pixels with 10 px pad, or None
     """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -554,7 +567,6 @@ def detect_watermark_regions_llm(
     vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Sample from middle 60 % to avoid intro/outro
     start = int(total * 0.20)
     end   = int(total * 0.80)
     indices = [
@@ -563,8 +575,11 @@ def detect_watermark_regions_llm(
     ]
 
     valid_corners = {"top_left", "top_right", "bottom_left", "bottom_right"}
-    # corner → list of (x, y, w, h) normalised detections
-    votes: dict[str, list[tuple[float, float, float, float]]] = {}
+    logo_votes: dict[str, list[tuple[float, float, float, float]]] = {}
+    sub_xs: list[float] = []
+    sub_ys: list[float] = []
+    sub_ws: list[float] = []
+    sub_hs: list[float] = []
 
     for frame_idx in indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -577,7 +592,7 @@ def detect_watermark_regions_llm(
             {"role": "system", "content": _LLM_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": "Detect all watermarks or channel logos in this video frame.",
+                "content": "Detect all watermarks/logos and any burned-in subtitle or title text in this video frame.",
                 "images": [b64],
             },
         ]
@@ -588,22 +603,20 @@ def detect_watermark_regions_llm(
                 if verbose:
                     print(f"[remove_logo/llm] frame {frame_idx}: empty response")
                 continue
+            print("hello")
             data = json.loads(raw)
-            watermarks = data.get("watermarks", [])
         except json.JSONDecodeError as exc:
             if verbose:
                 print(f"[remove_logo/llm] frame {frame_idx}: JSON parse error — {exc}")
-                print(f"[remove_logo/llm]   raw response: {repr(raw[:200])}")
+                print(f"[remove_logo/llm]   raw: {repr(raw[:200])}")
             continue
         except Exception as exc:
             if verbose:
                 print(f"[remove_logo/llm] frame {frame_idx}: error — {exc}")
             continue
 
-        if verbose:
-            print(f"[remove_logo/llm] frame {frame_idx}: {watermarks}")
-
-        for wm in watermarks:
+        # ── logos ──
+        for wm in data.get("watermarks", []):
             corner = wm.get("corner", "")
             if corner not in valid_corners:
                 continue
@@ -612,41 +625,90 @@ def detect_watermark_regions_llm(
                          float(wm["width"]), float(wm["height"]))
             except (KeyError, ValueError, TypeError):
                 continue
-            votes.setdefault(corner, []).append(entry)
+            logo_votes.setdefault(corner, []).append(entry)
+
+        # ── subtitle ──
+        sub = data.get("subtitle", {})
+        if sub.get("detected", False):
+            try:
+                sub_xs.append(float(sub["x"]))
+                sub_ys.append(float(sub["y"]))
+                sub_ws.append(float(sub["width"]))
+                sub_hs.append(float(sub["height"]))
+                if verbose:
+                    print(f"[remove_logo/llm] frame {frame_idx}: subtitle "
+                          f"x={sub['x']:.3f} y={sub['y']:.3f} "
+                          f"w={sub['width']:.3f} h={sub['height']:.3f}")
+            except (KeyError, ValueError, TypeError):
+                pass
+        elif verbose:
+            print(f"[remove_logo/llm] frame {frame_idx}: no subtitle detected")
 
     cap.release()
 
-    if not votes:
-        return []
-
+    # ── aggregate logos ──
     threshold = min_votes if min_votes is not None else max(1, n_frames // 2)
-    results: list[tuple[str, int, int, int, int]] = []
-
-    for corner, detections in votes.items():
+    logo_results: list[tuple[str, int, int, int, int]] = []
+    for corner, detections in logo_votes.items():
         n = len(detections)
         if verbose:
-            print(f"[remove_logo/llm] {corner}: {n}/{n_frames} votes "
-                  f"(need {threshold})")
+            print(f"[remove_logo/llm] logo {corner}: {n}/{n_frames} votes (need {threshold})")
         if n < threshold:
             continue
-
-        # Average normalised coords across votes
         avg_x = sum(d[0] for d in detections) / n
         avg_y = sum(d[1] for d in detections) / n
         avg_w = sum(d[2] for d in detections) / n
         avg_h = sum(d[3] for d in detections) / n
-
         px = max(0, int(avg_x * vid_w))
         py = max(0, int(avg_y * vid_h))
         pw = min(int(avg_w * vid_w), vid_w - px)
         ph = min(int(avg_h * vid_h), vid_h - py)
-
         if verbose:
-            print(f"[remove_logo/llm]   → x={px} y={py} w={pw} h={ph}")
+            print(f"[remove_logo/llm]   logo → x={px} y={py} w={pw} h={ph}")
+        logo_results.append((corner, px, py, pw, ph))
 
-        results.append((corner, px, py, pw, ph))
+    # ── aggregate subtitle: min(x), avg(y), max(w), avg(h) + 10 px pad ──
+    subtitle_bbox: tuple[int, int, int, int] | None = None
+    if len(sub_xs) >= threshold:
+        pad = 10
+        agg_x = min(sub_xs)
+        agg_y = sum(sub_ys) / len(sub_ys)
+        agg_w = max(sub_ws)
+        agg_h = sum(sub_hs) / len(sub_hs)
+        sx = max(0,       int(agg_x * vid_w) - pad)
+        sy = max(0,       int(agg_y * vid_h) - pad)
+        sw = min(vid_w - sx, int(agg_w * vid_w) + pad * 2)
+        sh = min(vid_h - sy, int(agg_h * vid_h) + pad * 2)
+        subtitle_bbox = (sx, sy, sw, sh)
+        if verbose:
+            print(f"[remove_logo/llm] subtitle → x={sx} y={sy} w={sw} h={sh} "
+                  f"(from {len(sub_xs)}/{n_frames} frames, +{pad}px pad)")
+    elif verbose:
+        print(f"[remove_logo/llm] subtitle: only {len(sub_xs)}/{n_frames} detections "
+              f"(need {threshold}) — not reported")
 
-    return results
+    return logo_results, subtitle_bbox
+
+
+def detect_watermark_regions_llm(
+    video_path: Path,
+    n_frames: int = 5,
+    ollama_url: str = "https://ollama.com",
+    model: str = "gemini-3-flash-preview:cloud",
+    api_key: str | None = None,
+    min_votes: int | None = None,
+    verbose: bool = False,
+) -> list[tuple[str, int, int, int, int]]:
+    """Detect watermark/logo regions via Ollama vision LLM.
+
+    Delegates to detect_all_regions_llm() and returns only the logo list.
+    Kept for backward compatibility.
+    """
+    logos, _ = detect_all_regions_llm(
+        video_path, n_frames=n_frames, ollama_url=ollama_url, model=model,
+        api_key=api_key, min_votes=min_votes, verbose=verbose,
+    )
+    return logos
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -689,13 +751,18 @@ def remove_logo(
     print(f"[remove_logo] Detecting watermarks in {input_path.name} "
           f"(provider={provider!r}) …")
 
+    subtitle_bbox: tuple[int, int, int, int] | None = None
+    print("hello")
     if provider == "llm":
-        regions = detect_watermark_regions_llm(
+        regions, subtitle_bbox = detect_all_regions_llm(
             input_path, ollama_url=ollama_url, model=model,
             api_key=api_key, verbose=verbose,
         )
     else:
         regions = detect_watermark_regions(input_path, verbose=verbose)
+
+    # Save detected regions so downstream steps (e.g. step6_compose) can use them
+    _save_detected_regions(input_path.parent, regions, subtitle_bbox)
 
     if not regions:
         print("[remove_logo] No watermarks detected — copying input unchanged")
@@ -714,3 +781,34 @@ def remove_logo(
     size_mb = output_path.stat().st_size / 1_048_576
     print(f"[remove_logo] Done → {output_path} ({size_mb:.1f} MB)")
     return output_path
+
+
+def _save_detected_regions(
+    output_dir: Path,
+    logos: list[tuple[str, int, int, int, int]],
+    subtitle: tuple[int, int, int, int] | None,
+) -> None:
+    """Persist detected logo and subtitle regions to detected_regions.json.
+
+    Format:
+        {
+          "logos": [{"corner": "top_right", "x": 10, "y": 5, "w": 100, "h": 50}],
+          "subtitle": {"x": 50, "y": 950, "w": 1820, "h": 80}  // or null
+        }
+
+    step6_compose reads this file to decide where to place Vietnamese subtitles
+    and whether to delogo the original subtitle region.
+    """
+    data: dict = {
+        "logos": [
+            {"corner": corner, "x": x, "y": y, "w": w, "h": h}
+            for corner, x, y, w, h in logos
+        ],
+        "subtitle": (
+            {"x": subtitle[0], "y": subtitle[1], "w": subtitle[2], "h": subtitle[3]}
+            if subtitle else None
+        ),
+    }
+    path = output_dir / "detected_regions.json"
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"[remove_logo] Saved detected regions → {path}")
