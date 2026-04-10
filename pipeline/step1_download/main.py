@@ -41,6 +41,7 @@ def download(url: str, output_base: Path, cookies_file: str | None = None) -> Pa
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": True,
+        "postprocessor_args": {"merger": ["-movflags", "+faststart"]},
     }
     if cookies_file:
         dl_opts["cookiefile"] = cookies_file
