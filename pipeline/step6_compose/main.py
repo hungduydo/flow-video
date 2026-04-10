@@ -187,7 +187,9 @@ def compose(
         yt = output_dir / "final_youtube.mp4"
         return yt if yt.exists() else output_dir / "final.mp4"
 
-    video_path = output_dir / "original.mp4"
+    # Prefer cleaned video (logos + subtitle already erased by step_remove_logo)
+    clean_path = output_dir / "original_clean.mp4"
+    video_path = clean_path if clean_path.exists() else output_dir / "original.mp4"
     audio_path = output_dir / "audio_vn_full.mp3"
     srt_path   = output_dir / "captions_vn.srt"
 

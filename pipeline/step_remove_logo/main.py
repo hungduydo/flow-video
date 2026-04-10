@@ -603,7 +603,6 @@ def detect_all_regions_llm(
                 if verbose:
                     print(f"[remove_logo/llm] frame {frame_idx}: empty response")
                 continue
-            print("hello")
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
             if verbose:
@@ -752,7 +751,6 @@ def remove_logo(
           f"(provider={provider!r}) …")
 
     subtitle_bbox: tuple[int, int, int, int] | None = None
-    print("hello")
     if provider == "llm":
         regions, subtitle_bbox = detect_all_regions_llm(
             input_path, ollama_url=ollama_url, model=model,
@@ -761,11 +759,21 @@ def remove_logo(
     else:
         regions = detect_watermark_regions(input_path, verbose=verbose)
 
-    # Save detected regions so downstream steps (e.g. step6_compose) can use them
-    _save_detected_regions(input_path.parent, regions, subtitle_bbox)
+    # Include the subtitle bbox as an additional delogo region so it gets erased too
+    if subtitle_bbox:
+        sx, sy, sw, sh = subtitle_bbox
+        regions.append(("subtitle", sx, sy, sw, sh))
+
+    # Save logo + subtitle metadata for downstream steps (step6_compose reads this)
+    # Strip the synthetic "subtitle" entry — only real logo corners belong in logos[]
+    _save_detected_regions(
+        input_path.parent,
+        [r for r in regions if r[0] != "subtitle"],
+        subtitle_bbox,
+    )
 
     if not regions:
-        print("[remove_logo] No watermarks detected — copying input unchanged")
+        print("[remove_logo] Nothing detected — copying input unchanged")
         shutil.copy2(input_path, output_path)
         return output_path
 
@@ -780,6 +788,49 @@ def remove_logo(
 
     size_mb = output_path.stat().st_size / 1_048_576
     print(f"[remove_logo] Done → {output_path} ({size_mb:.1f} MB)")
+    return output_path
+
+
+def clean(
+    output_dir: Path,
+    quality: str = "fast",
+    ollama_url: str = "https://ollama.com",
+    model: str = "gemini-3-flash-preview:cloud",
+    api_key: str | None = None,
+    verbose: bool = False,
+) -> Path:
+    """Pipeline entry point: detect & remove logos + subtitle from original.mp4.
+
+    Reads:  output_dir/original.mp4
+    Writes: output_dir/original_clean.mp4
+            output_dir/detected_regions.json
+            output_dir/.step_remove_logo.done  (sentinel)
+
+    Always uses the LLM provider so subtitle detection is available.
+    Returns the path to original_clean.mp4.
+    """
+    sentinel = output_dir / ".step_remove_logo.done"
+    if sentinel.exists():
+        print("[remove_logo] Skip — already cleaned")
+        return output_dir / "original_clean.mp4"
+
+    input_path  = output_dir / "original.mp4"
+    output_path = output_dir / "original_clean.mp4"
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Required file missing: {input_path}")
+
+    remove_logo(
+        input_path, output_path,
+        quality=quality,
+        provider="llm",
+        ollama_url=ollama_url,
+        model=model,
+        api_key=api_key,
+        verbose=verbose,
+    )
+
+    sentinel.touch()
     return output_path
 
 

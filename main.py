@@ -7,12 +7,13 @@ burned-in captions.
 
 Pipeline:
   step1   Download video (yt-dlp)
+  step1c  Remove logos + original subtitle (Ollama LLM → original_clean.mp4 + detected_regions.json)
   step2   Extract audio (ffmpeg → 16 kHz mono WAV)
   step2b  Separate vocals / accompaniment (Spleeter 2stems)
   step3   Transcribe Chinese speech (faster-whisper or Deepgram → captions_cn.srt)
   step4   Translate to Vietnamese (Gemini 2.0 Flash → captions_vn.srt)
   step5   Generate Vietnamese TTS + sync to timestamps (edge-tts + atempo + amix)
-  step6   Compose final video (ffmpeg: watermark crop + dub + captions)
+  step6   Compose final video (ffmpeg: dub + captions, auto-positioned via detected_regions.json)
 
 Usage:
   python main.py <bilibili_url> [options]
@@ -85,7 +86,8 @@ SENTINELS = {
     7: ".step7.done",
 }
 
-SENTINEL_1B = ".step1b.done"
+SENTINEL_1B  = ".step1b.done"
+SENTINEL_1C  = ".step_remove_logo.done"
 
 
 def _clear_sentinels_from(output_dir: Path, from_step: int) -> None:
@@ -135,6 +137,16 @@ def main() -> None:
                              "Use when the subject is off-center in the frame.")
     parser.add_argument("--output", default="output", metavar="DIR",
                         help="Base output directory (default: ./output)")
+    parser.add_argument("--skip-remove-logo", action="store_true",
+                        dest="skip_remove_logo",
+                        help="Skip logo/subtitle removal step (step1c)")
+    parser.add_argument("--ollama-url", default="https://ollama.com", dest="ollama_url",
+                        help="Ollama base URL for logo/subtitle detection")
+    parser.add_argument("--ollama-model", default="gemini-3-flash-preview:cloud",
+                        dest="ollama_model",
+                        help="Ollama model for logo/subtitle detection")
+    parser.add_argument("--ollama-api-key", default=None, dest="ollama_api_key",
+                        help="Ollama API key (or set OLLAMA_API_KEY env var)")
     args = parser.parse_args()
 
     # ── Interactive prompts for unspecified options ───────────────────────────
@@ -177,6 +189,7 @@ def main() -> None:
     # probe to get the ID, then apply --force / --from-step logic.
     from pipeline.step1_download.main import download
     from pipeline.step1b_scenes.main import detect_scenes
+    from pipeline.step_remove_logo.main import clean as remove_logo_clean
     from pipeline.step2_extract_audio.main import extract_audio
     from pipeline.step2b_separate_audio.main import separate_audio
     from pipeline.step3_transcribe.main import transcribe
@@ -199,6 +212,7 @@ def main() -> None:
         print("[main] --force: clearing all sentinels")
         _clear_sentinels_from(output_dir, from_step=1)
         (output_dir / SENTINEL_1B).unlink(missing_ok=True)
+        (output_dir / SENTINEL_1C).unlink(missing_ok=True)
         (output_dir / ".step2b.done").unlink(missing_ok=True)
         (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
         (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
@@ -207,6 +221,7 @@ def main() -> None:
         _clear_sentinels_from(output_dir, from_step=args.from_step)
         if args.from_step <= 2:
             (output_dir / SENTINEL_1B).unlink(missing_ok=True)
+            (output_dir / SENTINEL_1C).unlink(missing_ok=True)
         if args.from_step <= 3:  # step2b sits between steps 2 and 3
             (output_dir / ".step2b.done").unlink(missing_ok=True)
         if args.from_step <= 6:
@@ -217,6 +232,17 @@ def main() -> None:
 
     # ── Step 1b: Detect scenes ────────────────────────────────────────────────
     detect_scenes(output_dir)
+
+    # ── Step 1c: Remove logos + original subtitle (LLM) ──────────────────────
+    if not args.skip_remove_logo:
+        remove_logo_clean(
+            output_dir,
+            ollama_url=args.ollama_url,
+            model=args.ollama_model,
+            api_key=args.ollama_api_key,
+        )
+    else:
+        print("[main] Skipping logo/subtitle removal (--skip-remove-logo)")
 
     # ── Step 2: Extract audio ─────────────────────────────────────────────────
     extract_audio(output_dir)
@@ -234,11 +260,18 @@ def main() -> None:
     generate_tts(output_dir, provider=args.tts_provider)
 
     # ── Step 6: Compose ───────────────────────────────────────────────────────
+    # subtitle_position="auto" reads detected_regions.json written by step1c
+    # and places Vietnamese subtitles at the opposite region automatically.
+    # Falls back to bottom if step1c was skipped or detected nothing.
     final_path = compose(
         output_dir,
         crf=args.crf,
         platform=args.platform,
         tiktok_crop_x=args.tiktok_crop_x,
+        subtitle_position="auto",
+        ollama_url=args.ollama_url,
+        model=args.ollama_model,
+        ollama_api_key=args.ollama_api_key,
     )
 
     # ── Step 7: Banner thumbnails ─────────────────────────────────────────────
