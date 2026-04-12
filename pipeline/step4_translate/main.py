@@ -1,9 +1,10 @@
 """
 Step 4: Translate captions_cn.srt (Chinese) → captions_vn.srt (Vietnamese).
 
-Two providers (selectable via `provider` argument):
-  gemini  (default) — Gemini 2.0 Flash.   Requires GEMINI_API_KEY in .env.
-  claude            — Claude Sonnet 4.6.  Requires ANTHROPIC_API_KEY in .env.
+Three providers (selectable via `provider` argument):
+  ollama_cloud  (default) — Gemini 3-Flash Preview via Ollama Cloud. Requires OLLAMA_API_KEY in .env.
+  gemini                  — Gemini 2.0 Flash.   Requires GEMINI_API_KEY in .env.
+  claude                  — Claude Sonnet 4.6.  Requires ANTHROPIC_API_KEY in .env.
 
 Output:
   output/{video_id}/captions_vn.srt
@@ -22,7 +23,7 @@ from .utils import clean_subtitles
 load_dotenv()
 
 
-def translate(output_dir: Path, provider: str = "gemini") -> Path:
+def translate(output_dir: Path, provider: str = "ollama_cloud") -> Path:
     sentinel = output_dir / ".step4.done"
     if sentinel.exists():
         print("[step4] Skip — captions_vn.srt already exists")
@@ -68,12 +69,15 @@ def translate(output_dir: Path, provider: str = "gemini") -> Path:
 
     print(f"[step4] Translating {len(subtitles)} segments via {provider} …")
 
-    if provider == "claude":
-        from .providers.claude import run
-    else:
-        from .providers.gemini import run
+    from .providers import get_provider
+    provider_module = get_provider(provider)
+    translated_lines = provider_module.run(subtitles, system_prompt)
 
-    translated_lines = run(subtitles, system_prompt)
+    print(f"[step4] Received {len(translated_lines)} translations for {len(subtitles)} subtitles")
+    if len(translated_lines) != len(subtitles):
+        print(f"[step4] ERROR: Mismatch! Padding with empty strings...")
+        if len(translated_lines) < len(subtitles):
+            translated_lines.extend([""] * (len(subtitles) - len(translated_lines)))
 
     vn_subtitles = [
         srt.Subtitle(

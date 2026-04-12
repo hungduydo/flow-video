@@ -3,7 +3,7 @@ import re
 
 import srt
 
-BATCH_SIZE = 50
+BATCH_SIZE = 30  # reduced from 50 to avoid Gemini rate limits & ensure accuracy
 BATCH_CHARS = 4000
 CONTEXT_SIZE = 3  # previous segments passed as read-only context each batch
 
@@ -41,7 +41,11 @@ def batch(subtitles: list[srt.Subtitle]) -> list[list[srt.Subtitle]]:
 
 
 def parse_json_response(text: str, expected: int) -> list[str]:
-    """Parse a JSON array from LLM output, with line-split fallback."""
+    """Parse a JSON array from LLM output, with line-split fallback.
+
+    If Gemini returns more items than expected (due to splitting),
+    concatenate excess items into the last segment to preserve total count.
+    """
     cleaned = text.strip()
     cleaned = re.sub(r'^```[^\n]*\n?', '', cleaned, flags=re.MULTILINE)
     cleaned = cleaned.rstrip('`').strip()
@@ -49,9 +53,17 @@ def parse_json_response(text: str, expected: int) -> list[str]:
         result = json.loads(cleaned)
         if isinstance(result, list):
             lines = [str(item).strip() for item in result]
-            if len(lines) < expected:
+            if len(lines) > expected:
+                print(f"\n[step4] WARNING: Expected {expected} translations, got {len(lines)}")
+                print(f"[step4] Merging excess items into final segment to prevent data loss...")
+                # Merge excess items into the last expected segment
+                excess = lines[expected-1:] + lines[expected:]
+                merged = " ".join(excess)
+                lines = lines[:expected-1] + [merged]
+            elif len(lines) < expected:
+                print(f"\n[step4] WARNING: Expected {expected} translations, got {len(lines)}")
                 lines += [""] * (expected - len(lines))
-            return lines[:expected]
+            return lines
     except (json.JSONDecodeError, ValueError):
         pass
     # Fallback: plain line split

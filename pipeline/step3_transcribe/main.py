@@ -76,7 +76,7 @@ def _transcribe_whisper(output_dir: Path, srt_path: Path, sentinel: Path, model_
         task="transcribe",
         word_timestamps=True,
         vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 500},
+        vad_parameters={"min_silence_duration_ms": 300},  # reduced from 500ms for better segmentation
     )
 
     print(f"        Detected language: {info.language} ({info.language_probability:.1%})")

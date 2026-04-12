@@ -216,6 +216,7 @@ def _mix_with_accompaniment(speech_path: Path, accompaniment_path: Path, output_
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
+    output_dir = Path(output_dir).resolve()  # ensure absolute path for relative path safety
     sentinel = output_dir / ".step5.done"
     if sentinel.exists():
         print("[step5] Skip — audio_vn_full.mp3 already generated")

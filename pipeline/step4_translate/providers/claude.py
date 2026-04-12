@@ -52,11 +52,15 @@ def run(subtitles: list[srt.Subtitle], system_prompt: str) -> list[str]:
 
     client = anthropic.Anthropic(api_key=api_key)
     batches = batch(subtitles)
+    print(f"[step4] Total segments: {len(subtitles)}, split into {len(batches)} batch(es)")
     translated: list[str] = []
 
-    for b in tqdm(batches, desc="[step4] Claude", unit="batch"):
+    for i, b in enumerate(tqdm(batches, desc="[step4] Claude", unit="batch"), 1):
         context = subtitles[max(0, len(translated) - CONTEXT_SIZE) : len(translated)]
-        translated.extend(_translate_batch(client, b, context, system_prompt))
+        result = _translate_batch(client, b, context, system_prompt)
+        translated.extend(result)
+        print(f"[step4] Batch {i}: {len(b)} segments → {len(result)} translations")
         time.sleep(0.3)
 
+    print(f"[step4] Total translations: {len(translated)} (expected {len(subtitles)})")
     return translated

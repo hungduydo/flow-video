@@ -45,9 +45,9 @@ _FFMPEG_BIN = str(_FFMPEG_FULL) if _FFMPEG_FULL.exists() else "ffmpeg"
 # that subtitles would otherwise cover.
 
 _SUBTITLE_FORCE_STYLE = {
-    ("youtube", "bottom"): "Alignment=2,MarginV=30",
+    ("youtube", "bottom"): "Alignment=2,MarginV=384",   # 20% from bottom if no subtitle detected (use detected if available)
     ("youtube", "top"):    "Alignment=8,MarginV=20",
-    ("tiktok",  "bottom"): "Alignment=2,MarginV=80",   # higher to avoid TikTok UI
+    ("tiktok",  "bottom"): "Alignment=2,MarginV=384",   # 20% from bottom if no subtitle detected (use detected if available)
     ("tiktok",  "top"):    "Alignment=8,MarginV=30",
 }
 
@@ -56,34 +56,19 @@ def _auto_force_styles(
     bbox: tuple[int, int, int, int],
     src_w: int,
     src_h: int,
-) -> tuple[str, str]:
-    """Compute ASS force_style strings that place subtitles just above the bbox.
+) -> str:
+    """Compute ASS force_style for YouTube based on detected subtitle bbox.
 
-    Returns (youtube_style, tiktok_style).
-
-    Subtitle is always horizontally centered (Alignment=2) with its bottom edge
-    placed at bbox.y - 10 px, so it sits just above the detected box regardless
-    of whether the box is at the top or bottom of the frame.
+    Returns youtube_style with MarginV positioned just outside the detected bbox.
     """
-    _, by, _, _ = bbox
+    _, by, _, bh = bbox
 
     # ── YouTube (coords = source frame pixels) ────────────────────────────────
     # Alignment=2 (bottom-center): MarginV = distance from the bottom of the frame
-    # to the subtitle bottom edge.  We want subtitle bottom at (by - 10) from top,
-    # so MarginV from bottom = src_h - (by - 10) = src_h - by + 10.
-    yt_margin = max(10, src_h - by + 10)
-    yt_style = f"Alignment=2,MarginV={yt_margin}"
-
-    # ── TikTok blur-bg (coords = TikTok canvas 1080×1920) ────────────────────
-    # Map bbox.y from source frame to TikTok canvas.
-    scale = _TIKTOK_W / src_w
-    fg_h  = int(src_h * scale) & ~1       # round down to even (matches ffmpeg scale=-2)
-    y_off = (_TIKTOK_H - fg_h) // 2       # top-of-foreground on canvas
-    canvas_by = int(by * scale) + y_off
-    tt_margin = max(10, _TIKTOK_H - canvas_by + 10)
-    tt_style = f"Alignment=2,MarginV={tt_margin}"
-
-    return yt_style, tt_style
+    # to the subtitle bottom edge.  We want subtitle bottom at (by + bh) from top,
+    # so MarginV from bottom = src_h - (by + bh).
+    yt_margin = max(10, src_h - (by + bh))
+    return f"Alignment=2,MarginV={yt_margin}"
 
 
 # ── Video helpers ─────────────────────────────────────────────────────────────
@@ -132,6 +117,8 @@ def _compose_tiktok_blur_bg(
     srt_path: Path,
     final_path: Path,
     crf: int,
+    src_w: int,
+    src_h: int,
     subtitle_position: str = "bottom",
     delogo_region: tuple[int, int, int, int] | None = None,
     force_style_override: str | None = None,
@@ -144,7 +131,22 @@ def _compose_tiktok_blur_bg(
       - Foreground: source video scaled to canvas width (1080 px), vertically centered.
     """
     srt_escaped = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:")
-    force_style = force_style_override or _SUBTITLE_FORCE_STYLE[("tiktok", subtitle_position)]
+
+    if force_style_override:
+        force_style = force_style_override
+    else:
+        # Compute MarginV relative to the foreground layer, not the full canvas.
+        # ffmpeg scale=1080:-2 rounds height to nearest even number.
+        fg_h = round(src_h * _TIKTOK_W / src_w / 2) * 2
+        y_off = (_TIKTOK_H - fg_h) // 2   # top of fg on canvas
+        fg_bottom = y_off + fg_h           # bottom of fg on canvas
+        if subtitle_position == "top":
+            # Alignment=8: MarginV from top of canvas
+            force_style = f"Alignment=8,MarginV={y_off + 30}"
+        else:
+            # Alignment=2: MarginV from bottom of canvas → place at 20% from bottom
+            margin_v = round(_TIKTOK_H * 0.20)
+            force_style = f"Alignment=2,MarginV={margin_v}"
 
     # Background: scale by height to fill canvas, center-crop, blur
     bg_filter = (
@@ -310,11 +312,13 @@ def compose(
             raise FileNotFoundError(f"Required file missing: {p}")
 
     src_w, src_h = _get_video_dimensions(video_path)
+    is_landscape = src_w > src_h
     print(f"[step6] Source: {src_w}x{src_h}, platform={platform}, CRF={crf}")
 
-    # Resolve subtitle region: prefer detected_regions.json (written by step_remove_logo),
-    # fall back to running LLM detection directly if the file doesn't exist.
     delogo_region: tuple[int, int, int, int] | None = None
+    yt_force_style: str | None = None
+    tt_force_style: str | None = None
+
     if subtitle_position == "auto":
         bbox: tuple[int, int, int, int] | None = None
 
@@ -349,22 +353,19 @@ def compose(
                 bbox = (new_bx, by, min_w, bh)
                 print(f"[step6] Subtitle bbox width {bw}px → expanded to {min_w}px (60% of {src_w}px)")
 
-        # Compute per-platform force_style: subtitle centered, bottom edge at bbox.y - 10
-        yt_force_style: str | None = None
-        tt_force_style: str | None = None
-
         if bbox:
             delogo_region = bbox
             _, by, _, bh = bbox
-            yt_force_style, tt_force_style = _auto_force_styles(bbox, src_w, src_h)
-            print(f"[step6] Detected box y={by} h={bh} → subtitle bottom at y={by - 10} (MarginV={yt_force_style})")
+            yt_force_style = _auto_force_styles(bbox, src_w, src_h)
+            print(f"[step6] Detected box y={by} h={bh} → subtitle at y={by}~{by + bh} (MarginV={yt_force_style})")
         else:
             subtitle_position = "bottom"
             print("[step6] No original text detected → using default bottom position")
 
-    primary_path: Path | None = None
+    # TikTok always uses 20% from bottom (no detection needed)
+    # tt_force_style remains None, and _compose_tiktok_blur_bg uses its default
 
-    is_landscape = src_w > src_h
+    primary_path: Path | None = None
 
     for plat in remaining:
         if sentinel_map[plat].exists():
@@ -378,6 +379,7 @@ def compose(
             print(f"[step6] TikTok: blurred background layout ({src_w}×{src_h} → {_TIKTOK_W}×{_TIKTOK_H})")
             _compose_tiktok_blur_bg(
                 video_path, audio_path, srt_path, final_path, crf,
+                src_w=src_w, src_h=src_h,
                 subtitle_position=subtitle_position, delogo_region=delogo_region,
                 force_style_override=tt_force_style,
             )
