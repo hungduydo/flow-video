@@ -30,12 +30,20 @@ from .platforms import (
 )
 
 
+# PlayResY: Virtual resolution used by libass (FFmpeg subtitle filter)
+# FFmpeg default when not specified in SRT header: 288 or 384
+# Actual pixel position = (MarginV × video_height) / PLAYRES_Y
+PLAYRES_Y = 288
+
 # Subtitle position defaults (fallback when no detection available)
+# MarginV values calculated as: (pixel_from_bottom × PLAYRES_Y) / video_height
+# For 1080p: 20% from bottom = 216px = MarginV of (216 × 288) / 1080 = 57.6 ≈ 58
+# For 1920p (TikTok): 20% from bottom = 384px = MarginV of (384 × 288) / 1920 = 57.6 ≈ 58
 _SUBTITLE_FORCE_STYLE = {
-    ("youtube", "bottom"): "Alignment=2,MarginV=20",   # Top-center, 20px from top
-    ("youtube", "top"):    "Alignment=6,MarginV=20",
-    ("tiktok",  "bottom"): "Alignment=2,MarginV=384",  # Bottom-center, 20% from bottom
-    ("tiktok",  "top"):    "Alignment=6,MarginV=30",
+    ("youtube", "bottom"): "Alignment=2,MarginV=58",   # Bottom-center, ~20% from bottom (1080p)
+    ("youtube", "top"):    "Alignment=8,MarginV=20",   # Top-center, ~2% from top
+    ("tiktok",  "bottom"): "Alignment=2,MarginV=58",   # Bottom-center, ~20% from bottom (1920p)
+    ("tiktok",  "top"):    "Alignment=8,MarginV=30",   # Top-center, ~2% from top
 }
 
 
@@ -76,20 +84,27 @@ def compute_detected_subtitle_style(bbox: SubtitleRegion, src_h: int) -> str:
     """Compute ASS force_style for YouTube based on detected subtitle bbox.
     
     Places subtitle 10px below the detected text.
-    Alignment=6 (left-center), MarginV as percentage from top.
+    Converts pixel position to MarginV using PlayResY virtual resolution.
     
     Args:
         bbox: Detected subtitle bounding box (pixels)
         src_h: Source video height (pixels)
     
     Returns:
-        force_style string with MarginV as percentage
+        force_style string with MarginV in PlayResY units
+    
+    Formula:
+        pixel_from_bottom = src_h - (bbox.y + bbox.h + gap)
+        MarginV = (pixel_from_bottom × PLAYRES_Y) / src_h
     """
-    # Calculate pixel position: top of detected box + height + 10px gap
-    pixel_pos = max(20, src_h - (bbox.y + bbox.h + 10))
-    play_rect = (pixel_pos * 288)/src_h 
-    print(f"[step6] Subtitle style: Alignment=2,MarginV={play_rect}")
-    return f"Alignment=2,MarginV={play_rect},BorderStyle=3,OutlineColour=&H80000000"
+    # Distance from bottom where subtitle should appear
+    pixel_from_bottom = max(20, src_h - (bbox.y + bbox.h + 10))
+    
+    # Convert pixel position to MarginV units (accounting for PlayResY)
+    margin_v = int((pixel_from_bottom * PLAYRES_Y) / src_h)
+    
+    print(f"[step6] Detected subtitle: {pixel_from_bottom}px from bottom → MarginV={margin_v}")
+    return f"Alignment=2,MarginV={margin_v}"
 
 
 def get_subtitle_style(platform: str, position: str, detected_style: Optional[str] = None) -> str:
@@ -194,7 +209,9 @@ def compose(
             bbox = bbox.enforce_min_width(src_w)
             delogo_region = (bbox.x, bbox.y, bbox.w, bbox.h)
             detected_style = compute_detected_subtitle_style(bbox, src_h)
-            print(f"[step6] Detected box y={bbox.y} h={bbox.h} → MarginV={detected_style.split('=')[-1]}%")
+            # Extract MarginV value from detected_style for display
+            margin_v_val = detected_style.split("MarginV=")[-1].split(",")[0]
+            print(f"[step6] Detected box at y={bbox.y}px, h={bbox.h}px → force_style={detected_style}")
         else:
             print("[step6] No original text detected → using default position")
             subtitle_position = "bottom"
