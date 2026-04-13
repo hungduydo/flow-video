@@ -130,6 +130,8 @@ def main() -> None:
                         choices=["youtube", "tiktok", "both"],
                         help="Output platform profile: youtube (16:9), tiktok (9:16 crop), "
                              "both (prompted if omitted)")
+    parser.add_argument("--no-subtitle", action="store_false", dest="show_subtitle", default=None,
+                        help="Disable burned-in subtitles in the output video")
     parser.add_argument("--tiktok-crop-x", type=int, default=None, metavar="X",
                         dest="tiktok_crop_x",
                         help="Horizontal pixel offset for TikTok 9:16 crop (default: center). "
@@ -160,6 +162,11 @@ def main() -> None:
             args.platform = _choose(
                 "Output platform:", ["youtube", "tiktok", "both"], "youtube"
             )
+        if args.show_subtitle is None:
+            choice = _choose(
+                "Show subtitles in video?", ["yes", "no"], "yes"
+            )
+            args.show_subtitle = choice == "yes"
     else:
         # Non-interactive: fall back to defaults
         args.transcriber = args.transcriber or "whisper"
@@ -167,6 +174,8 @@ def main() -> None:
         args.tts_provider = args.tts_provider or "edge_tts"
         args.translator = args.translator or "gemini"
         args.platform = args.platform or "youtube"
+        if args.show_subtitle is None:
+            args.show_subtitle = True
 
     _check_ffmpeg()
 
@@ -203,6 +212,8 @@ def main() -> None:
         (output_dir / SENTINEL_1B).unlink(missing_ok=True)
         (output_dir / SENTINEL_1C).unlink(missing_ok=True)
         (output_dir / ".step2b.done").unlink(missing_ok=True)
+        (output_dir / ".step5a.done").unlink(missing_ok=True)
+        (output_dir / ".step5b.done").unlink(missing_ok=True)
         (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
         (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
     elif args.from_step is not None:
@@ -213,6 +224,9 @@ def main() -> None:
             (output_dir / SENTINEL_1C).unlink(missing_ok=True)
         if args.from_step <= 3:  # step2b sits between steps 2 and 3
             (output_dir / ".step2b.done").unlink(missing_ok=True)
+        if args.from_step <= 5:
+            (output_dir / ".step5a.done").unlink(missing_ok=True)
+            (output_dir / ".step5b.done").unlink(missing_ok=True)
         if args.from_step <= 6:
             (output_dir / ".step6.youtube.done").unlink(missing_ok=True)
             (output_dir / ".step6.tiktok.done").unlink(missing_ok=True)
@@ -247,6 +261,7 @@ def main() -> None:
         platform=args.platform,
         tiktok_crop_x=args.tiktok_crop_x,
         subtitle_position="auto",
+        show_subtitle=args.show_subtitle,
     )
 
     # ── Step 7: Banner thumbnails ─────────────────────────────────────────────

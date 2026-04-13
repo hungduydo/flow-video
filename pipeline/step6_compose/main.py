@@ -156,6 +156,7 @@ def compose(
     platform: str = "youtube",
     tiktok_crop_x: Optional[int] = None,
     subtitle_position: str = "bottom",
+    show_subtitle: bool = True,
     ollama_url: str = "https://ollama.com",
     model: str = "gemini-3-flash-preview:cloud",
     ollama_api_key: Optional[str] = None,
@@ -177,7 +178,8 @@ def compose(
     """
     config = ComposeConfig(
         crf=crf, tiktok_crop_x=tiktok_crop_x,
-        subtitle_position=subtitle_position, ollama_url=ollama_url, model=model,
+        subtitle_position=subtitle_position, show_subtitle=show_subtitle,
+        ollama_url=ollama_url, model=model,
         ollama_api_key=ollama_api_key, verbose=verbose
     )
     
@@ -266,6 +268,7 @@ if __name__ == "__main__":
     parser.add_argument("--platform", default="youtube", choices=["youtube", "tiktok", "both"])
     parser.add_argument("--tiktok-crop-x", type=int, default=None, dest="tiktok_crop_x")
     parser.add_argument("--subtitle-position", default="bottom", choices=["bottom", "top", "auto"], dest="subtitle_position")
+    parser.add_argument("--no-subtitle", action="store_false", dest="show_subtitle", help="Disable burned-in subtitles")
     parser.add_argument("--ollama-url", default="https://ollama.com", dest="ollama_url")
     parser.add_argument("--model", default="gemini-3-flash-preview:cloud")
     parser.add_argument("--ollama-api-key", default=None, dest="ollama_api_key")
@@ -274,6 +277,7 @@ if __name__ == "__main__":
     compose(
         Path(args.output_dir), crf=args.crf, platform=args.platform,
         tiktok_crop_x=args.tiktok_crop_x, subtitle_position=args.subtitle_position,
+        show_subtitle=args.show_subtitle,
         ollama_url=args.ollama_url, model=args.model,
         ollama_api_key=args.ollama_api_key, verbose=args.verbose
     )

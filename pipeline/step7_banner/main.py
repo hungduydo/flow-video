@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 from .compose import compose_banner
-from .frames import _frame_to_b64, extract_candidates
+from .frames import _frame_to_b64, extract_candidates, save_llm_decision
 
 _DEFAULT_MODEL = "gemini-3-flash-preview:cloud"
 _DEFAULT_OLLAMA_URL = "https://ollama.com"
@@ -110,7 +110,7 @@ def banner(
     resolved_url = ollama_url or os.environ.get("OLLAMA_URL", _DEFAULT_OLLAMA_URL)
 
     # Locate composed video (prefer youtube, fall back to tiktok)
-    video_path = output_dir / "final_youtube.mp4"
+    video_path = output_dir / "original_clean.mp4"
     if not video_path.exists():
         video_path = output_dir / "final_tiktok.mp4"
     if not video_path.exists():
@@ -135,12 +135,17 @@ def banner(
 
     scenes_path = output_dir / "scenes.json"
 
+    # ── Setup frames review directory ───────────────────────────────────────
+    frames_review_dir = output_dir / "frames_review"
+    frames_review_dir.mkdir(parents=True, exist_ok=True)
+
     # ── 1. Extract candidate frames ──────────────────────────────────────────
     print("[step7] Extracting candidate frames...")
     frames = extract_candidates(
         video_path,
         scenes_path=scenes_path if scenes_path.exists() else None,
         max_candidates=5,
+        save_dir=frames_review_dir,
     )
     if not frames:
         raise RuntimeError("No frames could be extracted from the video.")
@@ -163,6 +168,9 @@ def banner(
         frame_idx = 0
         title = (video_title or "Video Hay Nhất").split(" - ")[0][:40]
 
+    # Save LLM decision for manual verification
+    save_llm_decision(frames_review_dir, frame_idx, title, video_title)
+
     chosen_frame = frames[frame_idx]
 
     # ── 3. Compose and save banners ──────────────────────────────────────────
@@ -178,5 +186,6 @@ def banner(
         if plt == "youtube":
             out_path = out_file
 
+    print(f"[step7] ✓ Frame review comparison: {frames_review_dir}")
     sentinel.touch()
     return out_path

@@ -21,14 +21,23 @@ def _translate_batch(model, subs: list[srt.Subtitle], context: list[srt.Subtitle
                 reason = getattr(response.prompt_feedback, "block_reason", "unknown")
                 print(f"\n[step4] Gemini blocked (reason={reason}), skipping batch with empty translations")
                 return [""] * len(subs)
-            return parse_json_response(response.text, len(subs))
+            result = parse_json_response(response.text, len(subs))
+            if result is not None:
+                return result
+            # Count mismatch — retry with same delay logic
+            if attempt == 4:
+                print(f"[step4] WARNING: count mismatch after 5 attempts, padding with empty strings")
+                return [""] * len(subs)
+            print(f"[step4] Retrying batch (attempt {attempt + 2}/5) in {delay:.0f}s …")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
         except Exception as e:
             if attempt == 4:
                 raise
             print(f"\n[step4] Gemini error ({e}), retry in {delay:.0f}s …")
             time.sleep(delay)
             delay = min(delay * 2, 60)
-    return []
+    return [""] * len(subs)
 
 
 def run(subtitles: list[srt.Subtitle], system_prompt: str) -> list[str]:

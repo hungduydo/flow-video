@@ -27,7 +27,16 @@ def _translate_batch(client, subs: list[srt.Subtitle], context: list[srt.Subtitl
             ) as stream:
                 response = stream.get_final_message()
             text = next((b.text for b in response.content if b.type == "text"), "")
-            return parse_json_response(text, len(subs))
+            result = parse_json_response(text, len(subs))
+            if result is not None:
+                return result
+            # Count mismatch — retry
+            if attempt == 4:
+                print(f"[step4] WARNING: count mismatch after 5 attempts, padding with empty strings")
+                return [""] * len(subs)
+            print(f"[step4] Retrying batch (attempt {attempt + 2}/5) in {delay:.0f}s …")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
         except anthropic.RateLimitError as e:
             if attempt == 4:
                 raise
@@ -40,7 +49,7 @@ def _translate_batch(client, subs: list[srt.Subtitle], context: list[srt.Subtitl
             print(f"\n[step4] Claude error ({e}), retry in {delay:.0f}s …")
             time.sleep(delay)
             delay = min(delay * 2, 60)
-    return []
+    return [""] * len(subs)
 
 
 def run(subtitles: list[srt.Subtitle], system_prompt: str) -> list[str]:

@@ -40,11 +40,11 @@ def batch(subtitles: list[srt.Subtitle]) -> list[list[srt.Subtitle]]:
     return batches
 
 
-def parse_json_response(text: str, expected: int) -> list[str]:
-    """Parse a JSON array from LLM output, with line-split fallback.
+def parse_json_response(text: str, expected: int) -> list[str] | None:
+    """Parse a JSON array from LLM output.
 
-    If Gemini returns more items than expected (due to splitting),
-    concatenate excess items into the last segment to preserve total count.
+    Returns a list of exactly `expected` strings, or None if the count
+    doesn't match (signals the caller to retry the batch).
     """
     cleaned = text.strip()
     cleaned = re.sub(r'^```[^\n]*\n?', '', cleaned, flags=re.MULTILINE)
@@ -53,24 +53,18 @@ def parse_json_response(text: str, expected: int) -> list[str]:
         result = json.loads(cleaned)
         if isinstance(result, list):
             lines = [str(item).strip() for item in result]
-            if len(lines) > expected:
-                print(f"\n[step4] WARNING: Expected {expected} translations, got {len(lines)}")
-                print(f"[step4] Merging excess items into final segment to prevent data loss...")
-                # Merge excess items into the last expected segment
-                excess = lines[expected-1:] + lines[expected:]
-                merged = " ".join(excess)
-                lines = lines[:expected-1] + [merged]
-            elif len(lines) < expected:
-                print(f"\n[step4] WARNING: Expected {expected} translations, got {len(lines)}")
-                lines += [""] * (expected - len(lines))
-            return lines
+            if len(lines) == expected:
+                return lines
+            print(f"\n[step4] WARNING: Expected {expected} translations, got {len(lines)} — will retry")
+            return None
     except (json.JSONDecodeError, ValueError):
         pass
     # Fallback: plain line split
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
-    if len(lines) < expected:
-        lines += [""] * (expected - len(lines))
-    return lines[:expected]
+    if len(lines) == expected:
+        return lines
+    print(f"\n[step4] WARNING: Line-split fallback got {len(lines)}, expected {expected} — will retry")
+    return None
 
 
 def _build_scene_note(subs: list[srt.Subtitle], cuts: list[float] | None) -> str:
@@ -103,9 +97,14 @@ def build_prompt(
         parts.extend(s.content.strip() for s in context)
         parts.append("---")
 
-    parts.extend(s.content.strip() for s in subs)
+    for i, s in enumerate(subs, 1):
+        parts.append(f"{i}. {s.content.strip()}")
+
+    n = len(subs)
     parts.append("")
-    parts.append('Trả về CHỈ một mảng JSON các chuỗi đã dịch, đúng thứ tự: ["dịch 1", "dịch 2", ...]')
+    parts.append(f'Trả về CHỈ một mảng JSON đúng {n} phần tử, tương ứng 1-1 với {n} dòng trên:')
+    parts.append(f'["dịch dòng 1", "dịch dòng 2", ..., "dịch dòng {n}"]')
+    parts.append(f'BẮT BUỘC đúng {n} phần tử. KHÔNG gộp hay tách bất kỳ dòng nào. Dòng rất ngắn vẫn phải có 1 phần tử riêng.')
 
     scene_note = _build_scene_note(subs, cuts)
     if scene_note:

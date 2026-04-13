@@ -5,7 +5,7 @@ import requests
 
 from .base import TTSProvider
 
-ELEVENLABS_VOICE_ID_DEFAULT = "UsgbMVmY3U59ijwK5mdh"  # https://elevenlabs.io/app/voice-library?voiceId=UsgbMVmY3U59ijwK5mdh
+ELEVENLABS_VOICE_ID_DEFAULT = "aN7cv9yXNrfIR87bDmyD"  # https://elevenlabs.io/app/voice-library?voiceId=UsgbMVmY3U59ijwK5mdh
 ELEVENLABS_MODEL_DEFAULT = "eleven_v3"
 _API_BASE = "https://api.elevenlabs.io/v1"
 

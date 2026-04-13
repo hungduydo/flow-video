@@ -42,6 +42,7 @@ class ComposeConfig:
     crf: int = 23
     tiktok_crop_x: Optional[int] = None
     subtitle_position: str = "bottom"
+    show_subtitle: bool = True
     verbose: bool = False
     ollama_url: str = "https://ollama.com"
     model: str = "gemini-3-flash-preview:cloud"

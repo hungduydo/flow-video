@@ -35,8 +35,11 @@ class YouTubeCompose(ComposePlatform):
         Note: watermark and logo removal are handled in step_remove_logo.
         """
         # Build subtitle filter
-        srt_escaped = _escape_srt_path(paths.srt)
-        vf_filter = f"subtitles={srt_escaped}:force_style='{force_style}'"
+        if config.show_subtitle:
+            srt_escaped = _escape_srt_path(paths.srt)
+            vf_filter = f"subtitles={srt_escaped}:force_style='{force_style}'"
+        else:
+            vf_filter = "null"
         
         # Build ffmpeg command
         final_path = paths.output_dir / "final_youtube.mp4"

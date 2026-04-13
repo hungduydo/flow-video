@@ -44,8 +44,11 @@ class TikTokPortrait(ComposePlatform):
         crop_filter = _get_tiktok_crop(src_w, src_h, config.tiktok_crop_x)
         
         # Subtitles
-        srt_escaped = _escape_srt_path(paths.srt)
-        vf_filter = f"{crop_filter},subtitles={srt_escaped}:force_style='{force_style}'"
+        if config.show_subtitle:
+            srt_escaped = _escape_srt_path(paths.srt)
+            vf_filter = f"{crop_filter},subtitles={srt_escaped}:force_style='{force_style}'"
+        else:
+            vf_filter = crop_filter
         
         # Build ffmpeg command
         final_path = paths.output_dir / "final_tiktok.mp4"
@@ -95,13 +98,18 @@ class TikTokBlurBg(ComposePlatform):
         # Foreground: scale to canvas width
         fg_filter = f"scale={TIKTOK_W}:-2"
         
-        # Build filter_complex with overlay and subtitles
+        # Build filter_complex with overlay and optional subtitles
+        if config.show_subtitle:
+            srt_escaped = _escape_srt_path(paths.srt)
+            last_filter = f"[composed]subtitles={srt_escaped}:force_style='{force_style}'[out]"
+        else:
+            last_filter = "[composed]null[out]"
         filter_complex = (
             f"[0:v]split=2[bg_in][fg_in];"
             f"[bg_in]{bg_filter}[bg];"
             f"[fg_in]{fg_filter}[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[composed];"
-            f"[composed]subtitles={srt_escaped}:force_style='{force_style}'[out]"
+            f"{last_filter}"
         )
         
         # Build ffmpeg command
