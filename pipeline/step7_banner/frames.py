@@ -1,4 +1,4 @@
-"""Keyframe extraction and visual quality scoring for banner generation."""
+"""Keyframe extraction, visual quality scoring, and subject detection for banner generation."""
 
 import base64
 import json
@@ -31,7 +31,6 @@ def save_llm_decision(
     else:
         metadata = {"candidates": []}
 
-    # Add/update LLM decision
     metadata["llm_decision"] = {
         "chosen_frame_index": chosen_frame_idx,
         "title": title,
@@ -41,7 +40,6 @@ def save_llm_decision(
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
     print(f"[frames] Saved LLM decision to {metadata_path}")
 
-    # Generate HTML preview
     _generate_html_preview(review_dir, metadata)
 
 
@@ -184,6 +182,17 @@ def _generate_html_preview(review_dir: Path, metadata: dict) -> None:
             font-weight: 600;
             box-shadow: 0 2px 8px rgba(0,0,0,0.2);
         }}
+        .subject-badge {{
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }}
         .footer {{
             text-align: center;
             margin-top: 40px;
@@ -222,15 +231,20 @@ def _generate_html_preview(review_dir: Path, metadata: dict) -> None:
         idx = candidate.get("index", 0)
         filename = candidate.get("filename", "")
         score = candidate.get("score", 0)
+        subject = candidate.get("subject_info")
         is_selected = idx == chosen_idx
 
-        # Normalize score to 0-100 for visual bar
         score_pct = min(100, int(score * 100))
+        selected_html = '<div class="selected-badge">✓ SELECTED</div>' if is_selected else ""
 
-        selected_html = f'<div class="selected-badge">✓ SELECTED</div>' if is_selected else ""
+        subject_label = ""
+        if subject:
+            stype = subject.get("type", "")
+            subject_label = f'<div class="subject-badge">{"👤 face" if stype == "face" else "👁 saliency"}</div>'
 
         html_content += f"""            <div class="frame-card{' selected' if is_selected else ''}">
                 {selected_html}
+                {subject_label}
                 <img src="{filename}" alt="Frame {idx}" class="frame-image">
                 <div class="frame-info">
                     <div class="frame-title">Frame #{idx}</div>
@@ -258,8 +272,86 @@ def _generate_html_preview(review_dir: Path, metadata: dict) -> None:
     print(f"[frames] Generated preview: {html_path}")
 
 
+def _laplacian_sharpness(frame: np.ndarray) -> float:
+    """Return the Laplacian variance of a frame — higher = sharper."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def detect_subject(frame: np.ndarray) -> dict | None:
+    """Detect the primary subject in a frame.
+
+    Returns a dict with subject info (pixel coordinates), or None.
+
+    Priority:
+      1. MediaPipe FaceDetection — returns {"type": "face", "x", "y", "w", "h", "eye_y", "cx", "cy"}
+      2. OpenCV saliency map fallback — returns {"type": "saliency", "cx", "cy"}
+    """
+    h, w = frame.shape[:2]
+
+    # ── 1. Try MediaPipe face detection ──────────────────────────────────────
+    try:
+        import mediapipe as mp
+        mp_face = mp.solutions.face_detection
+        with mp_face.FaceDetection(model_selection=0, min_detection_confidence=0.5) as detector:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = detector.process(rgb)
+            if results.detections:
+                # Take the detection with highest confidence
+                best = max(results.detections, key=lambda d: d.score[0])
+                bb = best.location_data.relative_bounding_box
+                fx = int(bb.xmin * w)
+                fy = int(bb.ymin * h)
+                fw = int(bb.width * w)
+                fh = int(bb.height * h)
+                cx = fx + fw // 2
+                cy = fy + fh // 2
+
+                # Eye y: use right-eye keypoint (index 0) if available
+                eye_y = cy
+                kps = best.location_data.relative_keypoints
+                if kps:
+                    eye_y = int(kps[0].y * h)
+
+                return {
+                    "type": "face",
+                    "x": fx, "y": fy, "w": fw, "h": fh,
+                    "cx": cx, "cy": cy,
+                    "eye_y": eye_y,
+                }
+    except Exception:
+        pass  # mediapipe unavailable or failed — fall through
+
+    # ── 2. Fallback: OpenCV saliency map ─────────────────────────────────────
+    try:
+        saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
+        ok, sal_map = saliency.computeSaliency(frame)
+        if ok:
+            sal_map = (sal_map * 255).astype(np.uint8)
+            _, thresh = cv2.threshold(sal_map, 128, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                mx, my, mw, mh = cv2.boundingRect(largest)
+                return {
+                    "type": "saliency",
+                    "cx": mx + mw // 2,
+                    "cy": my + mh // 2,
+                }
+    except Exception:
+        pass
+
+    return None
+
+
 def score_frame(frame: np.ndarray) -> float:
-    """Score a frame on brightness, contrast, and colorfulness (0–1 each)."""
+    """Score a frame on sharpness, brightness, contrast, and colorfulness (0–1).
+
+    Returns 0.0 immediately for blurry frames (Laplacian variance < 100).
+    """
+    if _laplacian_sharpness(frame) < 100:
+        return 0.0
+
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     # Brightness: prefer frames near mid-range (not too dark/bright)
@@ -281,14 +373,21 @@ def extract_candidates(
     scenes_path: Path | None = None,
     max_candidates: int = 5,
     save_dir: Path | None = None,
-) -> list[np.ndarray]:
-    """Return up to *max_candidates* frames ranked by visual quality.
+    sample_interval: float = 1.0,
+) -> list[tuple[np.ndarray, dict | None]]:
+    """Return up to *max_candidates* (frame, subject_info) pairs ranked by visual quality.
 
-    Candidate timestamps come from:
-      - Midpoints of each scene (from scenes.json, if present)
-      - Evenly-spaced samples across the middle 60 % of the video
+    Samples one frame every *sample_interval* seconds (default 1s) across the
+    middle 60 % of the video. Blurry frames (Laplacian variance < 100) score 0
+    and are excluded from the top-N selection.
 
-    If save_dir is provided, saves all candidate frames and metadata there.
+    Args:
+        video_path:       Path to the video file.
+        scenes_path:      Optional path to scenes.json (unused for sampling,
+                          kept for API compatibility).
+        max_candidates:   Maximum number of top frames to return.
+        save_dir:         If given, candidate frames + metadata are saved here.
+        sample_interval:  Seconds between samples (0.5 for dense, 1.0 default).
     """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -298,69 +397,82 @@ def extract_candidates(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration_s = total_frames / fps
 
-    timestamps: list[float] = []
-
-    # Scene midpoints — great visual variety across cuts
-    if scenes_path and scenes_path.exists():
-        data = json.loads(scenes_path.read_text())
-        for scene in data.get("scenes", []):
-            start, end = scene[0], scene[1]
-            mid = (start + end) / 2
-            if 10 < mid < duration_s - 10:
-                timestamps.append(mid)
-
-    # Evenly-spaced fallback samples (middle 60 %)
+    # Sample across the middle 60 % to avoid intros/outros
     start_s = duration_s * 0.20
     end_s = duration_s * 0.80
-    n_samples = max(12, max_candidates * 3)
-    for i in range(n_samples):
-        t = start_s + i * (end_s - start_s) / max(n_samples - 1, 1)
+
+    timestamps: list[float] = []
+    t = start_s
+    while t <= end_s:
         timestamps.append(t)
+        t += sample_interval
 
-    # Deduplicate to nearest-second buckets, cap total reads at 20
-    seen: set[int] = set()
-    unique_ts: list[float] = []
-    for t in timestamps:
-        bucket = int(t)
-        if bucket not in seen:
-            seen.add(bucket)
-            unique_ts.append(t)
-    timestamps = unique_ts[:20]
-
-    frames_scored: list[tuple[float, np.ndarray]] = []
+    # Read all frames at each timestamp
+    all_frames: list[tuple[float, float, np.ndarray]] = []  # (timestamp, score, frame)
     for t in timestamps:
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, frame = cap.read()
         if ok:
-            frames_scored.append((score_frame(frame), frame))
+            all_frames.append((t, score_frame(frame), frame))
 
     cap.release()
 
-    frames_scored.sort(key=lambda x: x[0], reverse=True)
-    top_frames = [f for _, f in frames_scored[:max_candidates]]
+    total_sampled = len(all_frames)
+    sharp_count = sum(1 for _, s, _ in all_frames if s > 0)
+    print(f"[frames] Sampled {total_sampled} frames at {sample_interval}s interval "
+          f"({sharp_count} sharp, {total_sampled - sharp_count} blurry filtered)")
 
-    # Save candidate frames and metadata if save_dir provided
+    # Sort by score descending; top-N are the candidates passed to LLM
+    all_frames.sort(key=lambda x: x[1], reverse=True)
+    top_scored = all_frames[:max_candidates]
+    top_timestamps = {t for t, _, _ in top_scored}
+
+    # Detect subject for each top frame
+    results: list[tuple[np.ndarray, dict | None]] = []
+    for _t, _score, frame in top_scored:
+        subject = detect_subject(frame)
+        results.append((frame, subject))
+
+    # Save ALL scanned frames + metadata if save_dir provided
     if save_dir:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        metadata = {"candidates": []}
-        for idx, (score, frame) in enumerate(frames_scored[:max_candidates]):
-            # Save frame as image
-            frame_path = save_dir / f"frame_{idx:02d}_score_{score:.3f}.jpg"
-            cv2.imwrite(str(frame_path), frame)
+        # Map top-frame positions for O(1) lookup
+        top_indices = {i for i, (t, _, _) in enumerate(all_frames) if t in top_timestamps}
 
-            # Add to metadata
-            metadata["candidates"].append({
-                "index": idx,
-                "filename": f"frame_{idx:02d}_score_{score:.3f}.jpg",
+        metadata: dict = {"candidates": [], "all_frames": []}
+        candidate_counter = 0
+
+        for scan_idx, (t, score, frame) in enumerate(all_frames):
+            is_candidate = scan_idx in top_indices
+            filename = f"scan_{scan_idx:04d}_t{t:.1f}s_score_{score:.3f}.jpg"
+            cv2.imwrite(str(save_dir / filename), frame)
+
+            entry = {
+                "scan_index": scan_idx,
+                "timestamp_s": round(t, 2),
+                "filename": filename,
                 "score": round(float(score), 4),
-                "timestamp": round(t if idx < len(frames_scored) else 0, 2),
-            })
+                "is_candidate": is_candidate,
+                "blurry": score == 0.0,
+            }
+            metadata["all_frames"].append(entry)
 
-        # Save metadata
+            if is_candidate:
+                subject = results[candidate_counter][1]
+                cand_entry = {
+                    "index": candidate_counter,
+                    "filename": filename,
+                    "score": round(float(score), 4),
+                    "subject_info": subject,
+                }
+                metadata["candidates"].append(cand_entry)
+                candidate_counter += 1
+
         metadata_path = save_dir / "candidates_metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
-        print(f"[frames] Saved {len(top_frames)} candidate frames to {save_dir}")
+        print(f"[frames] Saved {total_sampled} scanned frames to {save_dir} "
+              f"(top {len(results)} candidates marked)")
 
-    return top_frames
+    return results

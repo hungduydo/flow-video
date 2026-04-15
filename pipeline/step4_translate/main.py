@@ -1,10 +1,11 @@
 """
 Step 4: Translate captions_cn.srt (Chinese) → captions_vn.srt (Vietnamese).
 
-Three providers (selectable via `provider` argument):
+Four providers (selectable via `provider` argument):
   ollama_cloud  (default) — Gemini 3-Flash Preview via Ollama Cloud. Requires OLLAMA_API_KEY in .env.
   gemini                  — Gemini 2.0 Flash.   Requires GEMINI_API_KEY in .env.
   claude                  — Claude Sonnet 4.6.  Requires ANTHROPIC_API_KEY in .env.
+  ollama                  — Local Ollama instance (localhost:11434). Model via OLLAMA_MODEL env (default: qwen2.5:7b).
 
 Output:
   output/{video_id}/captions_vn.srt

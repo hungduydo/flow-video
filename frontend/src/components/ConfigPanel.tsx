@@ -159,6 +159,7 @@ export function ConfigPanel() {
             options={[
               { value: 'gemini', label: 'Gemini 2.0 Flash' },
               { value: 'ollama_cloud', label: 'Ollama Cloud' },
+              { value: 'ollama', label: 'Ollama (local)' },
               { value: 'claude', label: 'Claude Sonnet' },
             ]}
           />

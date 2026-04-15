@@ -1,8 +1,14 @@
+# API server
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+apscheduler>=3.10
+
 yt-dlp
 faster-whisper
 demucs
 deepgram-sdk
-google-generativeai
+google-genai
 anthropic
 edge-tts
 elevenlabs
@@ -14,6 +20,7 @@ srt
 opencv-python
 ollama
 Pillow>=10.0
+mediapipe>=0.10
 
 # Optional: higher-quality scene detection for step1b_scenes
 # (primary path uses ffmpeg scdet which is always available)

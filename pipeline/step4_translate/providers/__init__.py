@@ -1,4 +1,4 @@
-"""Translation providers (Gemini, Claude, Ollama Cloud)."""
+"""Translation providers (Gemini, Claude, Ollama Cloud, Ollama local)."""
 
 from typing import Protocol
 
@@ -24,5 +24,8 @@ def get_provider(name: str):
     elif name == "ollama_cloud":
         from . import ollama_cloud
         return ollama_cloud
+    elif name == "ollama":
+        from . import ollama
+        return ollama
     else:
-        raise ValueError(f"Unknown translation provider: {name!r}. Available: gemini, claude, ollama_cloud")
+        raise ValueError(f"Unknown translation provider: {name!r}. Available: gemini, claude, ollama_cloud, ollama")

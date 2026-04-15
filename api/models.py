@@ -11,7 +11,7 @@ class JobCreateRequest(BaseModel):
     cookies_file: Optional[str] = None
     model: Literal["large-v3", "large-v2", "medium", "small", "base"] = "large-v3"
     transcriber: Literal["whisper", "deepgram"] = "whisper"
-    translator: Literal["gemini", "claude", "ollama_cloud"] = "gemini"
+    translator: Literal["gemini", "claude", "ollama_cloud", "ollama"] = "gemini"
     tts_provider: Literal["edge_tts", "elevenlabs"] = "edge_tts"
     platform: Literal["youtube", "tiktok", "both"] = "youtube"
     show_subtitle: bool = True
@@ -27,7 +27,7 @@ class RetryRequest(BaseModel):
     from_step: Optional[int] = Field(default=None, ge=1, le=7)
     model: Optional[Literal["large-v3", "large-v2", "medium", "small", "base"]] = None
     transcriber: Optional[Literal["whisper", "deepgram"]] = None
-    translator: Optional[Literal["gemini", "claude", "ollama_cloud"]] = None
+    translator: Optional[Literal["gemini", "claude", "ollama_cloud", "ollama"]] = None
     tts_provider: Optional[Literal["edge_tts", "elevenlabs"]] = None
     platform: Optional[Literal["youtube", "tiktok", "both"]] = None
     show_subtitle: Optional[bool] = None

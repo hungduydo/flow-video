@@ -1,7 +1,7 @@
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type Platform = 'youtube' | 'tiktok' | 'both'
 export type TranscriberProvider = 'whisper' | 'deepgram'
-export type TranslatorProvider = 'gemini' | 'claude' | 'ollama_cloud'
+export type TranslatorProvider = 'gemini' | 'claude' | 'ollama_cloud' | 'ollama'
 export type TtsProvider = 'edge_tts' | 'elevenlabs'
 export type WhisperModel = 'large-v3' | 'large-v2' | 'medium' | 'small' | 'base'
 

@@ -23,12 +23,21 @@ from .frames import _frame_to_b64, extract_candidates, save_llm_decision
 
 _DEFAULT_MODEL = "gemini-3-flash-preview:cloud"
 _DEFAULT_OLLAMA_URL = "https://ollama.com"
-
 _SYSTEM_PROMPT = """\
-You are a YouTube/TikTok thumbnail expert. Given candidate video frames and context:
-1. Pick the single most visually dramatic, eye-catching frame (high contrast, clear subject, dynamic action).
-2. Write a punchy 4-7 word Vietnamese hook title that creates curiosity or urgency.
+You are a YouTube/TikTok thumbnail expert. Your goal is to maximize CTR (Click-Through Rate).
+Given candidate video frames and context:
 
+1. FRAME SELECTION CRITERIA:
+- Pick the most visually arresting frame.
+- Prioritize: Clear facial expressions (big emotions), high color contrast, dynamic movement, or "golden ratio" composition.
+- Avoid: Blurry, dark, or cluttered frames.
+
+2. HOOK TITLE CRITERIA:
+- 4-7 word Vietnamese hook.
+- Use psychological triggers: Curiosity (tò mò), Urgency (khẩn cấp), or Transformation (lột xác).
+- Ensure the title is strictly relevant to the visual content of the chosen frame.
+
+OUTPUT FORMAT:
 Reply with ONLY valid JSON — no markdown, no explanation:
 {"frame": <integer 0 to N-1>, "title": "<Vietnamese title>"}"""
 
@@ -89,6 +98,7 @@ def banner(
     model: str = _DEFAULT_MODEL,
     ollama_url: str | None = None,
     api_key: str | None = None,
+    sample_interval: float = 1.0,
 ) -> Path:
     """Generate banner thumbnail(s) for the given pipeline output directory.
 
@@ -141,15 +151,19 @@ def banner(
 
     # ── 1. Extract candidate frames ──────────────────────────────────────────
     print("[step7] Extracting candidate frames...")
-    frames = extract_candidates(
+    candidates = extract_candidates(
         video_path,
         scenes_path=scenes_path if scenes_path.exists() else None,
         max_candidates=5,
         save_dir=frames_review_dir,
+        sample_interval=sample_interval,
     )
-    if not frames:
+    if not candidates:
         raise RuntimeError("No frames could be extracted from the video.")
-    print(f"[step7] {len(frames)} candidates scored")
+    print(f"[step7] {len(candidates)} candidates scored")
+
+    # Unpack (frame, subject) tuples — keep raw frames for LLM call
+    frames = [f for f, _ in candidates]
 
     # ── 2. LLM frame selection + hook title ──────────────────────────────────
     print(f"[step7] Asking {model} to select best frame + hook title...")
@@ -171,7 +185,7 @@ def banner(
     # Save LLM decision for manual verification
     save_llm_decision(frames_review_dir, frame_idx, title, video_title)
 
-    chosen_frame = frames[frame_idx]
+    chosen_frame, chosen_subject = candidates[frame_idx]
 
     # ── 3. Compose and save banners ──────────────────────────────────────────
     platforms = ["youtube", "tiktok"] if platform == "both" else [platform]
@@ -179,10 +193,16 @@ def banner(
 
     for plt in platforms:
         print(f"[step7] Composing {plt} banner ({chosen_frame.shape[1]}×{chosen_frame.shape[0]} → target)...")
-        img = compose_banner(chosen_frame, title, plt)
+        img = compose_banner(chosen_frame, title, plt, subject=chosen_subject)
         out_file = output_dir / f"banner_{plt}.jpg"
         img.save(str(out_file), "JPEG", quality=95, optimize=True)
         print(f"[step7] Saved {out_file}")
+
+        # Also export WebP for web optimization
+        webp_file = out_file.with_suffix(".webp")
+        img.save(str(webp_file), "WEBP", quality=85, method=6)
+        print(f"[step7] Saved {webp_file}")
+
         if plt == "youtube":
             out_path = out_file
 

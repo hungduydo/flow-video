@@ -11,12 +11,12 @@ from ..utils import CONTEXT_SIZE, batch, build_prompt, parse_json_response
 MODEL = "gemini-3.1-flash-lite-preview"
 
 
-def _translate_batch(model, subs: list[srt.Subtitle], context: list[srt.Subtitle], system_prompt: str) -> list[str]:
+def _translate_batch(client, subs: list[srt.Subtitle], context: list[srt.Subtitle], system_prompt: str) -> list[str]:
     prompt = build_prompt(subs, context, system_prompt)
     delay = 1.0
     for attempt in range(5):
         try:
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(model=MODEL, contents=prompt)
             if not response.candidates:
                 reason = getattr(response.prompt_feedback, "block_reason", "unknown")
                 print(f"\n[step4] Gemini blocked (reason={reason}), skipping batch with empty translations")
@@ -41,14 +41,13 @@ def _translate_batch(model, subs: list[srt.Subtitle], context: list[srt.Subtitle
 
 
 def run(subtitles: list[srt.Subtitle], system_prompt: str) -> list[str]:
-    import google.generativeai as genai
+    from google import genai
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY not set — add it to .env")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(MODEL)
+    client = genai.Client(api_key=api_key)
 
     batches = batch(subtitles)
     print(f"[step4] Total segments: {len(subtitles)}, split into {len(batches)} batch(es)")
@@ -56,7 +55,7 @@ def run(subtitles: list[srt.Subtitle], system_prompt: str) -> list[str]:
 
     for i, b in enumerate(tqdm(batches, desc="[step4] Gemini", unit="batch"), 1):
         context = subtitles[max(0, len(translated) - CONTEXT_SIZE) : len(translated)]
-        result = _translate_batch(model, b, context, system_prompt)
+        result = _translate_batch(client, b, context, system_prompt)
         translated.extend(result)
         print(f"[step4] Batch {i}: {len(b)} segments → {len(result)} translations")
         time.sleep(0.5)

@@ -124,7 +124,7 @@ def main() -> None:
                         choices=["edge_tts", "elevenlabs"],
                         help="TTS provider for step 5 (prompted if omitted)")
     parser.add_argument("--translator", default=None,
-                        choices=["gemini", "claude"],
+                        choices=["gemini", "claude", "ollama_cloud", "ollama"],
                         help="Translation provider for step 4 (prompted if omitted)")
     parser.add_argument("--platform", default=None,
                         choices=["youtube", "tiktok", "both"],
@@ -156,7 +156,7 @@ def main() -> None:
             )
         if args.translator is None:
             args.translator = _choose(
-                "Translation provider:", ["gemini", "claude"], "gemini"
+                "Translation provider:", ["gemini", "claude", "ollama_cloud", "ollama"], "gemini"
             )
         if args.platform is None:
             args.platform = _choose(

@@ -4,9 +4,8 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
-from .main import detect_watermark_regions, detect_watermark_regions_llm, remove_logo
+from .main import detect_all_regions_llm, remove_logo
 
 
 # Colours for up to 4 detected regions (BGR)
@@ -22,7 +21,6 @@ def _draw_debug_frame(input_path: Path, regions: list, out_path: Path) -> None:
     """Extract a mid-video frame, draw detected rectangles, save to out_path."""
     cap = cv2.VideoCapture(str(input_path))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    # Use frame at 20% into the video so logos are usually visible
     cap.set(cv2.CAP_PROP_POS_FRAMES, int(total * 0.20))
     ok, frame = cap.read()
     cap.release()
@@ -33,13 +31,10 @@ def _draw_debug_frame(input_path: Path, regions: list, out_path: Path) -> None:
 
     for i, (corner, x, y, w, h) in enumerate(regions):
         colour = _COLOURS[i % len(_COLOURS)]
-        # Draw filled semi-transparent rectangle
         overlay = frame.copy()
         cv2.rectangle(overlay, (x, y), (x + w - 1, y + h - 1), colour, -1)
         frame = cv2.addWeighted(overlay, 0.25, frame, 0.75, 0)
-        # Draw solid border
         cv2.rectangle(frame, (x, y), (x + w - 1, y + h - 1), colour, 3)
-        # Label (corner name + size)
         label = f"{corner}  {w}x{h}"
         lx = x + 6
         ly = y + 26 if y + 26 < y + h else y + h - 6
@@ -57,37 +52,25 @@ def main() -> None:
     default_api_key    = os.environ.get("OLLAMA_API_KEY", "")
 
     parser = argparse.ArgumentParser(
-        description="Remove persistent corner logo/watermark from a video.",
+        description="Remove persistent corner logo/watermark from a video using LLM detection.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python -m pipeline.step_remove_logo input.mp4
   python -m pipeline.step_remove_logo input.mp4 output_clean.mp4
-  python -m pipeline.step_remove_logo input.mp4 --quality high
   python -m pipeline.step_remove_logo input.mp4 --detect-only
   python -m pipeline.step_remove_logo input.mp4 --detect-only --debug --verbose
-
-  # LLM detection via Ollama
-  python -m pipeline.step_remove_logo input.mp4 --provider llm
-  python -m pipeline.step_remove_logo input.mp4 --provider llm --model llava:13b
-  python -m pipeline.step_remove_logo input.mp4 --provider llm --ollama-url http://my-server:11434
-  OLLAMA_URL=http://my-server:11434 python -m pipeline.step_remove_logo input.mp4 --provider llm
+  python -m pipeline.step_remove_logo input.mp4 --model llava:13b
+  python -m pipeline.step_remove_logo input.mp4 --ollama-url http://localhost:11434
+  OLLAMA_URL=http://localhost:11434 python -m pipeline.step_remove_logo input.mp4
 """,
     )
     parser.add_argument("input", help="Input video path")
     parser.add_argument("output", nargs="?", default=None,
                         help="Output video path (default: {stem}_clean.mp4)")
     parser.add_argument(
-        "--quality", choices=["fast", "high"], default="fast",
-        help="fast=ffmpeg filters (default), high=OpenCV TELEA inpainting",
-    )
-    parser.add_argument(
-        "--provider", choices=["cv", "llm"], default="cv",
-        help="Detection provider: cv=pixel-variance (default), llm=Ollama vision model",
-    )
-    parser.add_argument(
         "--model", default="gemini-3-flash-preview:cloud",
-        help="Ollama model name for --provider llm (default: gemini-3-flash-preview:cloud)",
+        help="Ollama model name (default: gemini-3-flash-preview:cloud)",
     )
     parser.add_argument(
         "--ollama-url", default=default_ollama_url,
@@ -107,7 +90,7 @@ Examples:
     )
     parser.add_argument(
         "--verbose", action="store_true",
-        help="Print per-corner detection scores and threshold comparisons",
+        help="Print per-frame LLM detection results",
     )
 
     args = parser.parse_args()
@@ -118,34 +101,34 @@ Examples:
         sys.exit(1)
 
     if args.detect_only:
-        print(f"[remove_logo] Detecting watermarks in {input_path.name} "
-              f"(provider={args.provider!r}) …")
-        if args.provider == "llm":
-            results = detect_watermark_regions_llm(
-                input_path,
-                ollama_url=args.ollama_url,
-                model=args.model,
-                api_key=args.ollama_api_key,
-                verbose=args.verbose,
-            )
+        print(f"[remove_logo] Detecting watermarks in {input_path.name} …")
+        logos, subtitle = detect_all_regions_llm(
+            input_path,
+            ollama_url=args.ollama_url,
+            model=args.model,
+            api_key=args.ollama_api_key,
+            verbose=args.verbose,
+        )
+        if not logos and not subtitle:
+            print("[remove_logo] No watermarks or subtitle detected")
         else:
-            results = detect_watermark_regions(input_path, verbose=args.verbose)
-
-        if not results:
-            print("[remove_logo] No watermarks detected")
-        else:
-            print(f"[remove_logo] Found {len(results)} watermark(s):")
-            for corner, x, y, w, h in results:
-                print(f"  {corner}: x={x} y={y} w={w} h={h}")
+            if logos:
+                print(f"[remove_logo] Found {len(logos)} logo(s):")
+                for corner, x, y, w, h in logos:
+                    print(f"  {corner}: x={x} y={y} w={w} h={h}")
+            if subtitle:
+                sx, sy, sw, sh = subtitle
+                print(f"[remove_logo] Subtitle: x={sx} y={sy} w={sw} h={sh}")
             if args.debug:
+                all_regions = list(logos)
+                if subtitle:
+                    all_regions.append(("subtitle", *subtitle))
                 debug_path = input_path.parent / f"{input_path.stem}_debug.jpg"
-                _draw_debug_frame(input_path, results, debug_path)
+                _draw_debug_frame(input_path, all_regions, debug_path)
         return
 
     remove_logo(
         input_path, args.output,
-        quality=args.quality,
-        provider=args.provider,
         ollama_url=args.ollama_url,
         model=args.model,
         api_key=args.ollama_api_key,
