@@ -18,6 +18,8 @@ from pathlib import Path
 import srt
 from dotenv import load_dotenv
 
+from pipeline.prereqs import check_prerequisites
+
 from .prompt import SYSTEM_PROMPT
 from .utils import clean_subtitles
 
@@ -29,6 +31,8 @@ def translate(output_dir: Path, provider: str = "ollama_cloud") -> Path:
     if sentinel.exists():
         print("[step4] Skip — captions_vn.srt already exists")
         return output_dir / "captions_vn.srt"
+
+    check_prerequisites("step4_translate", output_dir)
 
     cn_srt_path = output_dir / "captions_cn.srt"
     if not cn_srt_path.exists():

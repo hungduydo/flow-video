@@ -80,7 +80,7 @@ function extractStepConfig(stepKey: string, def: JobCreateRequest): Partial<JobC
     case 'compose':
       return { platform: def.platform, crf: def.crf, show_subtitle: def.show_subtitle, tiktok_crop_x: def.tiktok_crop_x }
     case 'banner':
-      return { platform: def.platform }
+      return {}
     default:
       return {}
   }

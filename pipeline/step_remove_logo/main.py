@@ -18,6 +18,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pipeline.prereqs import check_prerequisites
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -430,6 +432,8 @@ def clean(
     if sentinel.exists():
         print("[step1c] Skip — already done")
         return clean_path if clean_path.exists() else output_dir / "original.mp4"
+
+    check_prerequisites("step1c_remove_logo", output_dir)
 
     input_path = output_dir / "original.mp4"
     if not input_path.exists():

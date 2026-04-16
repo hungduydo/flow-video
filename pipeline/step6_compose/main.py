@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from pipeline.prereqs import check_prerequisites
+
 from .platforms import (
     VideoPaths, ComposeConfig, get_platform,
 )
@@ -201,7 +203,9 @@ def compose(
         print("[step6] Skip — all platform outputs already composed")
         yt = output_dir / "final_youtube.mp4"
         return yt if yt.exists() else output_dir / "final.mp4"
-    
+
+    check_prerequisites("step6_compose", output_dir)
+
     # Detect subtitle region if using auto mode
     delogo_region = None
     detected_style = None

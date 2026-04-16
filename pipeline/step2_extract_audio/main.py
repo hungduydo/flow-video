@@ -12,12 +12,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pipeline.prereqs import check_prerequisites
+
 
 def extract_audio(output_dir: Path) -> Path:
     sentinel = output_dir / ".step2.done"
     if sentinel.exists():
         print("[step2] Skip — audio.wav already extracted")
         return output_dir / "audio.wav"
+
+    check_prerequisites("step2_extract_audio", output_dir)
 
     video_path = output_dir / "original.mp4"
     if not video_path.exists():

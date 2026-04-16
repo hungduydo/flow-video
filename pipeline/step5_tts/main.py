@@ -21,6 +21,8 @@ Output:
 import sys
 from pathlib import Path
 
+from pipeline.prereqs import check_prerequisites
+
 from .step5a_synth import synth_segments
 from .step5b_assemble import assemble_audio
 
@@ -41,6 +43,8 @@ def generate_tts(output_dir: Path, provider: str = "edge_tts") -> Path:
     if (output_dir / ".step5.done").exists():
         print("[step5] Skip — audio_vn_full.mp3 already generated")
         return output_dir / "audio_vn_full.mp3"
+
+    check_prerequisites("step5_tts", output_dir)
 
     synth_segments(output_dir, provider=provider)
     full_audio = assemble_audio(output_dir)

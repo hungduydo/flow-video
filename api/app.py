@@ -221,6 +221,12 @@ def create_app() -> FastAPI:
     def create_flow(body: FlowCreateRequest):
         fs: FlowStore = app.state.flow_store
         sched: FlowScheduler = app.state.scheduler
+        if body.schedule:
+            try:
+                from apscheduler.triggers.cron import CronTrigger
+                CronTrigger.from_crontab(body.schedule)
+            except Exception as exc:
+                raise HTTPException(422, detail=f"Invalid cron expression: {exc}")
         flow = fs.create(
             name=body.name,
             definition=body.definition.model_dump(),
@@ -249,15 +255,17 @@ def create_app() -> FastAPI:
         sched: FlowScheduler = app.state.scheduler
         if fs.get(flow_id) is None:
             raise HTTPException(404, detail=f"Flow {flow_id} not found")
-        updates: dict = {}
-        if body.name is not None:
-            updates["name"] = body.name
-        if body.definition is not None:
-            updates["definition"] = body.definition.model_dump()
-        if body.schedule is not None:
-            updates["schedule"] = body.schedule
-        if body.enabled is not None:
-            updates["enabled"] = body.enabled
+        # Use model_fields_set so explicit `null` values (e.g. clearing schedule) are applied
+        raw = body.model_dump()
+        updates: dict = {k: raw[k] for k in body.model_fields_set}
+        if "definition" in updates and updates["definition"] is not None:
+            updates["definition"] = body.definition.model_dump()  # type: ignore[union-attr]
+        if updates.get("schedule") is not None:
+            try:
+                from apscheduler.triggers.cron import CronTrigger
+                CronTrigger.from_crontab(updates["schedule"])
+            except Exception as exc:
+                raise HTTPException(422, detail=f"Invalid cron expression: {exc}")
         flow = fs.update(flow_id, **updates)
         sched.sync_flow(flow)
         return _make_flow_response(flow)

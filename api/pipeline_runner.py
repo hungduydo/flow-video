@@ -56,7 +56,7 @@ class _JobLogWriter(io.RawIOBase):
         else:
             s = b
         if s.strip():
-            self._job.log_buffer.append(s.rstrip("\n"))
+            self._job.append_log(s.rstrip("\n"))
         return len(b)
 
     def readable(self) -> bool:
@@ -71,7 +71,7 @@ class _JobLogWriter(io.RawIOBase):
 def _update_step(job: Job, step: int | str, name: str) -> None:
     job.current_step = step
     job.current_step_name = name
-    job.log_buffer.append(f"[API] Starting step {step}: {name}")
+    job.append_log(f"[API] Starting step {step}: {name}")
 
 
 def _check_cancel(job: Job) -> None:
@@ -227,14 +227,14 @@ def run_job(job: Job) -> None:
         job.failed_step = job.current_step
         job.failed_step_name = job.current_step_name
         job.error = "Cancelled by user"
-        job.log_buffer.append("[API] Job cancelled by user")
+        job.append_log("[API] Job cancelled by user")
     except Exception:
         tb = traceback.format_exc()
         job.status = "failed"
         job.failed_step = job.current_step
         job.failed_step_name = job.current_step_name
         job.error = tb
-        job.log_buffer.append(f"[ERROR] {tb}")
+        job.append_log(f"[ERROR] {tb}")
     finally:
         job.finished_at = datetime.utcnow()
         try:

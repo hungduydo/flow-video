@@ -18,6 +18,8 @@ import json
 import os
 from pathlib import Path
 
+from pipeline.prereqs import check_prerequisites
+
 from .compose import compose_banner
 from .frames import _frame_to_b64, extract_candidates, save_llm_decision
 
@@ -116,6 +118,8 @@ def banner(
     if sentinel.exists():
         print("[step7] Skip — already done")
         return output_dir / "banner_youtube.jpg"
+
+    check_prerequisites("step7_banner", output_dir)
 
     resolved_url = ollama_url or os.environ.get("OLLAMA_URL", _DEFAULT_OLLAMA_URL)
 

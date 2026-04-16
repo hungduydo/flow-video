@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pipeline.prereqs import check_prerequisites
+
 
 def separate_audio(output_dir: Path) -> tuple[Path, Path]:
     sentinel = output_dir / ".step2b.done"
@@ -27,6 +29,8 @@ def separate_audio(output_dir: Path) -> tuple[Path, Path]:
     if sentinel.exists():
         print("[step2b] Skip — vocals.wav / accompaniment.wav already exist")
         return vocals_path, accompaniment_path
+
+    check_prerequisites("step2b_separate_audio", output_dir)
 
     wav_path = output_dir / "audio.wav"
     if not wav_path.exists():

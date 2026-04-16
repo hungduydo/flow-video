@@ -10,6 +10,8 @@ from typing import Callable, Literal, Optional
 
 from .models import FileInfo, JobCreateRequest, RetryRequest
 
+LOG_BUFFER_LIMIT = 10_000  # max lines kept per job to prevent unbounded memory growth
+
 # Whitelisted output files clients can list/download
 OUTPUT_FILES = [
     "final_youtube.mp4",
@@ -40,6 +42,11 @@ class Job:
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     error: Optional[str] = None
+
+    def append_log(self, line: str) -> None:
+        """Append a log line, enforcing LOG_BUFFER_LIMIT to prevent unbounded memory growth."""
+        if len(self.log_buffer) < LOG_BUFFER_LIMIT:
+            self.log_buffer.append(line)
 
     def output_files(self) -> list[str]:
         """Return list of output filenames that currently exist on disk."""
@@ -77,7 +84,8 @@ class JobManager:
         job = Job(job_id=str(uuid.uuid4()), request=request)
         with self._lock:
             self._jobs[job.job_id] = job
-        assert self._runner is not None, "Runner not set — call set_runner() first"
+        if self._runner is None:
+            raise RuntimeError("Runner not set — call set_runner() before submit()")
         self._executor.submit(self._runner, job)
         return job
 

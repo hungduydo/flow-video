@@ -14,6 +14,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from pipeline.prereqs import check_prerequisites
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,6 +94,8 @@ def detect_scenes(output_dir: Path) -> Path:
     if sentinel.exists():
         print("[step1b] Skip — scenes.json already exists")
         return output_dir / "scenes.json"
+
+    check_prerequisites("step1b_scenes", output_dir)
 
     # Find source video: first non-final .mp4 or .mkv
     video_path: Path | None = None

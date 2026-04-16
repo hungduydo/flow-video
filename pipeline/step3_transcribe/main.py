@@ -26,6 +26,8 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
+from pipeline.prereqs import check_prerequisites
+
 import srt
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -180,6 +182,8 @@ def transcribe(output_dir: Path, model_size: str = "large-v3", provider: str = "
     if sentinel.exists():
         print("[step3] Skip — captions_cn.srt already exists")
         return output_dir / "captions_cn.srt"
+
+    check_prerequisites("step3_transcribe", output_dir)
 
     wav_path = output_dir / "vocals.wav" if (output_dir / "vocals.wav").exists() else output_dir / "audio.wav"
     if not wav_path.exists():

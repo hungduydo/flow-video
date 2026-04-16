@@ -219,17 +219,9 @@ export function ConfigPanel() {
       )}
 
       {selectedNodeId === 'banner' && (
-        <Field label="Platform">
-          <Select
-            value={cfg.platform ?? 'youtube'}
-            onChange={(v) => upd({ platform: v })}
-            options={[
-              { value: 'youtube', label: 'YouTube' },
-              { value: 'tiktok', label: 'TikTok' },
-              { value: 'both', label: 'Both' },
-            ]}
-          />
-        </Field>
+        <div className="text-slate-500 text-sm bg-slate-800/50 rounded-lg p-3">
+          Banner thumbnails are generated automatically using the platform set in the Compose step.
+        </div>
       )}
 
       {['scenes', 'extract', 'separate'].includes(selectedNodeId ?? '') && (
