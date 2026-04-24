@@ -152,6 +152,27 @@ def _detect_subtitle_region(
 
 # ── Main Composition ───────────────────────────────────────────────────────────
 
+def _concat_videos(intro_path: Path, main_path: Path, output_path: Path) -> None:
+    """Concatenate intro video to main video using ffmpeg concat demuxer."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        concat_file = Path(f.name)
+        f.write(f"file '{intro_path}'\n")
+        f.write(f"file '{main_path}'\n")
+
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(concat_file),
+            "-c", "copy",  # No re-encoding
+            str(output_path),
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+    finally:
+        concat_file.unlink()
+
+
 def compose(
     output_dir: Path,
     crf: int = 23,
@@ -159,22 +180,25 @@ def compose(
     tiktok_crop_x: Optional[int] = None,
     subtitle_position: str = "bottom",
     show_subtitle: bool = True,
+    with_intro: bool = False,
     ollama_url: str = "https://ollama.com",
     model: str = "gemini-3-flash-preview:cloud",
     ollama_api_key: Optional[str] = None,
     verbose: bool = False,
 ) -> Path:
     """Compose final video(s) with burned-in Vietnamese captions.
-    
+
     Args:
         output_dir: output directory
         crf: ffmpeg quality (0-51, lower = better)
         platform: "youtube", "tiktok", or "both"
         tiktok_crop_x: horizontal crop offset for portrait TikTok
         subtitle_position: "bottom" (default), "top", or "auto" (LLM detect)
+        show_subtitle: enable burned-in subtitles
+        with_intro: prepend intro_video.mp4 to final output (if it exists)
         ollama_url/model/ollama_api_key: for LLM detection
         verbose: print debug info
-    
+
     Returns:
         Path to primary output file
     """
@@ -251,6 +275,27 @@ def compose(
         if primary_path is None:
             primary_path = final_path
     
+    # Prepend intro video if requested and available
+    if with_intro:
+        intro_path = output_dir / "intro_video.mp4"
+        if intro_path.exists():
+            print(f"[step6] Prepending intro segment…")
+            # Recreate composed videos with intro prepended
+            for plat in remaining:
+                if plat == "youtube":
+                    final_path = output_dir / "final_youtube.mp4"
+                    final_with_intro = output_dir / "final_youtube_with_intro.mp4"
+                else:
+                    final_path = output_dir / "final_tiktok.mp4"
+                    final_with_intro = output_dir / "final_tiktok_with_intro.mp4"
+
+                if final_path.exists():
+                    _concat_videos(intro_path, final_path, final_with_intro)
+                    shutil.move(final_with_intro, final_path)
+                    print(f"[step6] {plat} with intro: {final_path}")
+        else:
+            print(f"[step6] Intro video not found: {intro_path}, skipping prepend")
+
     # Backward compat: write final.mp4
     yt_out = output_dir / "final_youtube.mp4"
     tt_out = output_dir / "final_tiktok.mp4"
@@ -260,7 +305,7 @@ def compose(
     elif tt_out.exists():
         shutil.copy2(tt_out, output_dir / "final.mp4")
         (output_dir / ".step6.done").touch()
-    
+
     return primary_path or output_dir / "final.mp4"
 
 
@@ -273,6 +318,7 @@ if __name__ == "__main__":
     parser.add_argument("--tiktok-crop-x", type=int, default=None, dest="tiktok_crop_x")
     parser.add_argument("--subtitle-position", default="bottom", choices=["bottom", "top", "auto"], dest="subtitle_position")
     parser.add_argument("--no-subtitle", action="store_false", dest="show_subtitle", help="Disable burned-in subtitles")
+    parser.add_argument("--with-intro", action="store_true", help="Prepend intro segment to final video")
     parser.add_argument("--ollama-url", default="https://ollama.com", dest="ollama_url")
     parser.add_argument("--model", default="gemini-3-flash-preview:cloud")
     parser.add_argument("--ollama-api-key", default=None, dest="ollama_api_key")
@@ -281,7 +327,7 @@ if __name__ == "__main__":
     compose(
         Path(args.output_dir), crf=args.crf, platform=args.platform,
         tiktok_crop_x=args.tiktok_crop_x, subtitle_position=args.subtitle_position,
-        show_subtitle=args.show_subtitle,
+        show_subtitle=args.show_subtitle, with_intro=args.with_intro,
         ollama_url=args.ollama_url, model=args.model,
         ollama_api_key=args.ollama_api_key, verbose=args.verbose
     )

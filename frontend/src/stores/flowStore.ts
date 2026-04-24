@@ -16,6 +16,9 @@ interface FlowStore {
   flowName: string
   flowSchedule: string | null
   flowEnabled: boolean
+  // Job run state (drives node visual status)
+  jobCurrentStep: string | null
+  jobDoneSteps: string[]
   setNodes: (nodes: Node<StepNodeData>[]) => void
   setEdges: (edges: Edge[]) => void
   selectNode: (id: string | null) => void
@@ -23,6 +26,8 @@ interface FlowStore {
   setFlowMeta: (name: string, schedule: string | null, enabled: boolean) => void
   initFromDefinition: (def: JobCreateRequest) => void
   toDefinition: () => JobCreateRequest
+  setJobStep: (currentStepIndex: number | null) => void
+  resetJobState: () => void
 }
 
 // Pipeline step definitions
@@ -62,7 +67,7 @@ function buildEdges(): Edge[] {
     source: step.key,
     target: STEP_DEFS[i + 1].key,
     type: 'smoothstep',
-    style: { stroke: '#475569', strokeWidth: 2 },
+    style: { stroke: '#1e1e2c', strokeWidth: 1.5 },
     animated: false,
   }))
 }
@@ -114,10 +119,22 @@ export const useFlowStore = create<FlowStore>((set, get) => ({
   flowName: 'New Flow',
   flowSchedule: null,
   flowEnabled: true,
+  jobCurrentStep: null,
+  jobDoneSteps: [],
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
   selectNode: (id) => set({ selectedNodeId: id }),
+
+  // stepIndex is 0-based current step number from the API
+  setJobStep: (stepIndex) => {
+    if (stepIndex === null) return
+    const currentKey = STEP_DEFS[stepIndex]?.key ?? null
+    const doneKeys = STEP_DEFS.slice(0, stepIndex).map(s => s.key)
+    set({ jobCurrentStep: currentKey, jobDoneSteps: doneKeys })
+  },
+
+  resetJobState: () => set({ jobCurrentStep: null, jobDoneSteps: [] }),
 
   updateNodeConfig: (nodeId, patch) =>
     set((state) => ({

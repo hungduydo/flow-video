@@ -87,6 +87,7 @@ SENTINELS = {
 
 SENTINEL_1B = ".step1b.done"
 SENTINEL_1C = ".step1c.done"
+SENTINEL_INTRO = ".step_intro.done"
 
 
 def _clear_sentinels_from(output_dir: Path, from_step: int) -> None:
@@ -136,6 +137,15 @@ def main() -> None:
                         dest="tiktok_crop_x",
                         help="Horizontal pixel offset for TikTok 9:16 crop (default: center). "
                              "Use when the subject is off-center in the frame.")
+    parser.add_argument("--intro-bg-image", metavar="PATH", default=None,
+                        help="Background image for intro segment (enables intro generation)")
+    parser.add_argument("--intro-duration", type=float, default=5.0, metavar="SECONDS",
+                        help="Intro video duration in seconds (default: 5.0)")
+    parser.add_argument("--llm-provider", default=None,
+                        choices=["claude", "gemini"],
+                        help="LLM provider for intro text generation (prompted if omitted)")
+    parser.add_argument("--with-intro", action="store_true", default=False,
+                        help="Prepend intro segment to final video")
     parser.add_argument("--output", default="output", metavar="DIR",
                         help="Base output directory (default: ./output)")
     args = parser.parse_args()
@@ -192,6 +202,7 @@ def main() -> None:
     from pipeline.step2b_separate_audio.main import separate_audio
     from pipeline.step3_transcribe.main import transcribe
     from pipeline.step4_translate.main import translate
+    from pipeline.step_intro.main import intro
     from pipeline.step5_tts.main import generate_tts
     from pipeline.step6_compose.main import compose
     from pipeline.step7_banner.main import banner
@@ -211,6 +222,7 @@ def main() -> None:
         _clear_sentinels_from(output_dir, from_step=1)
         (output_dir / SENTINEL_1B).unlink(missing_ok=True)
         (output_dir / SENTINEL_1C).unlink(missing_ok=True)
+        (output_dir / SENTINEL_INTRO).unlink(missing_ok=True)
         (output_dir / ".step2b.done").unlink(missing_ok=True)
         (output_dir / ".step5a.done").unlink(missing_ok=True)
         (output_dir / ".step5b.done").unlink(missing_ok=True)
@@ -224,6 +236,8 @@ def main() -> None:
             (output_dir / SENTINEL_1C).unlink(missing_ok=True)
         if args.from_step <= 3:  # step2b sits between steps 2 and 3
             (output_dir / ".step2b.done").unlink(missing_ok=True)
+        if args.from_step <= 4:  # intro sits after step 4
+            (output_dir / SENTINEL_INTRO).unlink(missing_ok=True)
         if args.from_step <= 5:
             (output_dir / ".step5a.done").unlink(missing_ok=True)
             (output_dir / ".step5b.done").unlink(missing_ok=True)
@@ -251,6 +265,25 @@ def main() -> None:
     # ── Step 4: Translate ─────────────────────────────────────────────────────
     translate(output_dir, provider=args.translator)
 
+    # ── Step Intro: Generate intro segment (optional) ─────────────────────────
+    if args.intro_bg_image:
+        if args.llm_provider is None:
+            if sys.stdin.isatty():
+                args.llm_provider = _choose(
+                    "LLM provider for intro text:", ["claude", "gemini"], "claude"
+                )
+            else:
+                args.llm_provider = "claude"
+        intro(
+            output_dir=output_dir,
+            bg_image_path=Path(args.intro_bg_image),
+            title=json.loads((output_dir / "metadata.json").read_text()).get("title", ""),
+            captions_srt_path=output_dir / "captions_vn.srt",
+            duration=args.intro_duration,
+            provider=args.tts_provider,
+            llm_provider=args.llm_provider,
+        )
+
     # ── Step 5: TTS ───────────────────────────────────────────────────────────
     generate_tts(output_dir, provider=args.tts_provider)
 
@@ -262,6 +295,7 @@ def main() -> None:
         tiktok_crop_x=args.tiktok_crop_x,
         subtitle_position="auto",
         show_subtitle=args.show_subtitle,
+        with_intro=args.with_intro,
     )
 
     # ── Step 7: Banner thumbnails ─────────────────────────────────────────────

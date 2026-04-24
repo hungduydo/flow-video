@@ -59,8 +59,7 @@ def translate(output_dir: Path, provider: str = "ollama_cloud") -> Path:
                 timestamps = ", ".join(f"{c:.2f}s" for c in cuts)
                 system_prompt = (
                     system_prompt
-                    + f"\n\n[Cảnh quay: có cắt cảnh tại {timestamps}. "
-                    "Dịch ngắn gọn ở các phân đoạn gần ranh giới cảnh.]"
+                    + f"\n\n[Cảnh quay: có cắt cảnh tại {timestamps}.]"
                 )
                 print(f"[step4] Loaded {len(cuts)} scene cut(s) from scenes.json")
         except Exception:

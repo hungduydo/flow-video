@@ -7,7 +7,8 @@
       "Bash(source venv/bin/activate)",
       "Bash(python flow_v2/main_v2.py --help)",
       "Bash(ffmpeg -i /Users/user/develop/flow-video/output/BV1wD4y1D7Pt/final.mp4 -vf \"fps=1/30\" /tmp/frames_bt_%03d.png -y)",
-      "Bash(python -c \"from pipeline.registry import REGISTRY; print\\(list\\(REGISTRY.keys\\(\\)\\)\\)\")"
+      "Bash(python -c \"from pipeline.registry import REGISTRY; print\\(list\\(REGISTRY.keys\\(\\)\\)\\)\")",
+      "Bash(python -c \"from pipeline.step_intro import intro; print\\('✓ step_intro imports successfully'\\)\")"
     ]
   }
 }

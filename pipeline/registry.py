@@ -89,6 +89,13 @@ REGISTRY: dict[str, StepInfo] = {s.id: s for s in [
         dependencies=("step3_transcribe",),
     ),
     StepInfo(
+        id="step_intro",
+        name="Intro",
+        description="Generate intro segment with LLM-generated text and visual overlay",
+        sentinel=".step_intro.done",
+        dependencies=("step4_translate", "step1c_remove_logo"),
+    ),
+    StepInfo(
         id="step5_tts",
         name="TTS",
         description="Generate Vietnamese TTS audio → audio_vn_full.mp3",

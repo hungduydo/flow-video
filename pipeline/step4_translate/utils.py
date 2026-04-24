@@ -77,10 +77,7 @@ def _build_scene_note(subs: list[srt.Subtitle], cuts: list[float] | None) -> str
     if not relevant:
         return ""
     timestamps = ", ".join(f"{c:.2f}s" for c in sorted(relevant))
-    return (
-        f"\n[Lưu ý cảnh quay: có cắt cảnh tại {timestamps}. "
-        "Hãy dịch ngắn gọn ở các phân đoạn gần ranh giới cảnh.]"
-    )
+    return f"\n[Lưu ý cảnh quay: có cắt cảnh tại {timestamps}.]"
 
 
 def build_prompt(

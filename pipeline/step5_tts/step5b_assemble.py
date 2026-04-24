@@ -54,7 +54,7 @@ def _build_speech_timeline(
         cmd += ["-i", str(seg_path)]
 
     filter_parts = [
-        f"[{i}:a]adelay={delay_ms}|{delay_ms}[a{i}]"
+        f"[{i}:a]atempo=1.1,adelay={delay_ms}|{delay_ms}[a{i}]"
         for i, (_, delay_ms) in enumerate(items)
     ]
     mix_inputs = "".join(f"[a{i}]" for i in range(len(items)))
